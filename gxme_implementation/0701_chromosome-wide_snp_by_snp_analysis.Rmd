@@ -1,0 +1,3715 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # PARAMETERS SPECIFIED BY USER 
+  # (in addition to arguments given in separate file)
+  
+  # CHROMOSOME NUMBER
+  chr_number: 4
+  
+  # PIPELINE DIRECTORY
+  pipeline_dir: "C:/Temp/edj079/2024-05-29_pipeline_dir"
+  
+  # PATH TO ARGUMENTS FILE TO USE WHEN PERFORMING ANALYSES
+  # arguments_path: "C:/Temp/edj079/2024-05-29_pipeline_dir/0000_arguments_PoOxMe.R"
+  arguments_path: "C:/Temp/edj079/2024-05-29_pipeline_dir/0000_arguments.R"
+  
+  # PARALLEL PROCESSING
+  
+  # Number of cores/processes
+  
+  # CORES ELCAJON01
+  # n_cores: !r 88 # maximum of what's viable on elcajon01 (~91% of 96 available cores)
+  n_cores: !r 88
+  # n_cores: !r 96
+  # n_cores: !r 104
+  # CORES ELCAJON
+  # n_cores: !r 112 # maximum viable on elcajon
+  
+  # CHUNK SIZE 
+  # (The maximum number of SNPs to process in parallel at a time)
+  # (#qqq change name of argument to max_chunk_size?)
+  
+  # chunk_size: 1700 # 10 chunks on chr 18
+  
+title: "`r paste0('0701 - Perform chromosome-wide analysis of all the final SNP x SL pairings - Chromosome ', params$chr_number) `"
+---
+
+```{r start_timer}
+# VARIABLE WITH DATETIME DENOTING THE START TIME OF THIS SCRIPT
+script_start_datetime <- Sys.time()
+# (can be used in file names where useful)
+```
+
+
+```{r record_freeram_at_start}
+# Record amount of free RAM at start of script:
+freeram_start_of_script <- as.character( memuse::Sys.meminfo()$freeram )
+```
+
+
+# Determine and set root directory, i.e. working directory
+
+Based on `pipeline_dir` and `chr_number` given in YAML.
+
+```{r}
+# Determine root_dir based on params$chr_number and pipeline_dir
+root_dir <- file.path( params$pipeline_dir
+                       , "chromosomes" 
+                       , sprintf( "Chr%02d", params$chr_number)
+)
+
+# Check that root_dir exists:
+stopifnot( dir.exists( root_dir ) )
+
+# Set working directory to root_dir:
+setwd(root_dir)
+```
+
+
+# Make parameters into variables 
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r params}
+# Chromosome number:
+chr_number <- params$chr_number
+
+# Pipeline directory:
+pipeline_dir <- params$pipeline_dir
+
+# Path to file with arguments to be used in analyses:
+arguments_path <- params$arguments_path
+
+# Number of cores/processes
+n_cores <- params$n_cores
+
+# Stop if specified n_cores is larger than what is available:
+stopifnot( n_cores <= parallel::detectCores() )
+
+# Chunk size (number of SNPs to process in parallel at a time)
+# chunk_size <-  1005 # "hard-coded" 
+chunk_size <-  params$chunk_size
+
+# Chunk size should be larger than or equal to n_cores, otherwise we are not
+# utilising all of the available cores
+if( chunk_size < n_cores ){
+  warning( "`chunk_size` is lesser than `n_cores`. ")
+  message( "Setting `chunk_size` equal to `n_cores`...")
+  chunk_size <- n_cores
+}
+
+
+# HARD-CODED PARAMETERS 
+# (users should not tamper with these unless they know what they're doing)
+
+# Stage directory:
+stage_dir <- "0701"
+
+# SNP x SL PAIRINGS
+snp_sl_pairings_path <- file.path( "0501", "0501_snp_state_loci.feather") 
+
+# GWAS FILESET 
+gwas_fileset_dir <- "0502" # "hard-code" gwas dir
+gwas_fileset_name <- "0502_gwas" # "hard-code" gwas fileset name
+gwas_fileset_path <- file.path(gwas_fileset_dir, gwas_fileset_name)
+
+# SL STRATA 
+strata_fileset_dir <- "0501" # "hard-code" SL strata fileset dir
+strata_fileset_name <- "0501_all_sl_strata" # "hard-code" SL strata fileset name
+strata_path <- file.path( strata_fileset_dir, strata_fileset_name )
+stopifnot( file.exists( paste0( strata_path, ".ffData") ) )
+
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+- `r `
+  
+- `r `
+
+## Files produced by this script
+
+- `r `   
+  
+- `r ` 
+  
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE
+                      , message = TRUE
+                      , error = TRUE
+                      )
+options(scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(ff)
+library(Haplin)
+library(data.table)
+library(dplyr)
+library(feather)
+library(gt)
+library(logr)
+# library(janitor) # masks chisq.test, so do not load. I only use adorn_totals.
+library(readr)
+```
+
+
+# Load the arguments specified in `r arguments_path`
+
+```{r}
+# Source the source_arguments function
+if( file.exists( file.path( pipeline_dir, "R", "f_source_arguments.R" ) ) ){
+  source( file.path( pipeline_dir, "R", "f_source_arguments.R" ) )
+} else{
+  stop( file.path( pipeline_dir, "R", "f_source_arguments.R" )
+        , " does not exist!" )
+}
+
+# Check that the specified arguments file is in the pipeline directory:
+if( dirname(arguments_path) != pipeline_dir ){
+  stop("The arguments file must be placed in pipeline_dir.")
+}
+
+# Check that the arguments file exists:
+if( !file.exists( arguments_path ) ){
+  stop( "The path given in `arguments_path` does not exist.")
+}
+
+# Source the arguments given in arguments_path:
+args <- source_arguments( file_path = arguments_path )
+
+# Check that .R file with arguments was successfully loaded:
+stopifnot( is.list(args) & length(args) > 16 ) 
+#xxxxx Update accordingly wrt the number of arguments
+
+# Create separate list for the arguments that will be loaded into the global
+# environment
+args_to_be_loaded <- args[ grepl( "ewas_family_member|gxe_pvals"
+                                  , names(args) ) ]
+# (Don't include Haplin arguments and other arguments that are not used in this
+# script. Haplin arguments will go in their own list.)
+
+# Assign the objects in the temporary environment to the global environment:
+for( x in names(args_to_be_loaded) ){
+  assign( x, args_to_be_loaded[[x]], envir = parent.frame() )
+}
+
+```
+
+
+# Create list with Haplin arguments
+
+```{r }
+# HAPLIN ARGUMENTS (put in list to pass to foreach)
+haplin_args <- args[ grepl( "^haplin_", names(args) ) ]
+
+# Add Haplin arguments that are hard-coded:
+haplin_args$haplin_data.out = "no" # hard-code "no"
+haplin_args$haplin_verbose = TRUE # hard-code TRUE
+haplin_args$haplin_printout = FALSE # hard-code FALSE
+
+```
+
+
+# Check the `haplin` arguments given by user
+
+```{r}
+# CCVAR
+
+# Haplin requires that: 
+# "Parameter "ccvar" should only be specified when using design "cc.triad" or
+# "cc" "
+if( !is.null(haplin_args$haplin_ccvar) & 
+    !(haplin_args$haplin_design %in% c("cc.triad", "cc")) ){
+  stop( "Haplin requires that 'Parameter `ccvar` should only be specified when "
+        , "using design \"cc.triad\" or \"cc\"'"
+  )
+}
+
+
+# PoO
+stopifnot( haplin_args$haplin_poo %in% c(FALSE, TRUE) )
+
+# RESPONSE AND REFERENCE
+# N.B. If response = "mult", but reference is not "ref.cat", then
+# reference is changed to "ref.cat" by haplin and a warning is given.
+if( haplin_args$haplin_response == "mult" &
+    !( haplin_args$haplin_reference == "ref.cat" ) ){
+  stop( "\nhaplin_response = \"", haplin_args$haplin_response, "\" and\n" 
+        , "haplin_reference = \"", haplin_args$haplin_reference, "\".\n" 
+        , "The Haplin package documentation states that if response = \"mult\""
+        , "but reference is not \"ref.cat\", then reference is changed to "
+        , "\"ref.cat\" by haplin and a warning is given.\n"
+        , "Please correct your specified arguments before running the script"
+        , " again from the beginning."
+        )
+}
+
+```
+
+
+
+# Create directory for results/output
+
+
+```{r}
+# The gxe/PoO results will be placed in their own directory in
+# pipeline_dir/Results. The directory will be named using the template
+# "Chr??_yyyy-mm-dd_hhmmss" where the timestamp is taken from the
+# script_start_datetime variable.
+
+# Check if pipeline_dir/Results exists:
+stopifnot( dir.exists( file.path( pipeline_dir, "Results" ) ) )
+
+# Create name of directory where the results will be placed 
+# (use timestamp from script_start_datetime to avoid accidentally overwriting
+# previously generated results)
+res_chr_dirname <- paste0( sprintf( "Chr%02d_", chr_number )
+                       , format( script_start_datetime, "%Y-%m-%d_%H%M%S" ) )
+
+
+# Create chromosome-specific folder in the Results directory unless it already
+# exist:
+if( !dir.exists( file.path( pipeline_dir, "Results", res_chr_dirname ) ) ){
+  dir.create( file.path( pipeline_dir, "Results", res_chr_dirname ) )
+}
+
+# Create directory specifically for the genome-wide gxe/PoO results unless it
+# already exist:
+results_dir <- file.path( pipeline_dir
+                          , "Results"
+                          , res_chr_dirname
+                          , ifelse( haplin_args$haplin_poo == FALSE
+                                    , yes = "genomewide_gxe_results" 
+                                    , no = "genomewide_pooxe_results" ) )
+
+if( !dir.exists( results_dir ) ){ dir.create( results_dir ) }
+
+# Check if there are any files already present in results_dir:
+files_in_results_dir <- list.files( results_dir, full.names = TRUE )
+
+if( length(files_in_results_dir) > 0 ){
+  stop( "\nThere are already files present in\n"
+        ,  results_dir
+        , ".\nThis should not occur. Please ensure that you have saved "
+        , "previously generated results in an appropriate manner, then try to "
+        , "run this script again from the beginning." )
+}
+```
+
+
+# Create stage directory for other output (parallel processing-related)
+
+```{r stage_dir}
+# Create stage dir unless it already exist:
+if( !dir.exists( stage_dir ) ){ dir.create( stage_dir ) }
+
+# Check for files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, recursive = T, include.dirs = F )
+
+# Throw error and ask user to comment out this if statement if they know what
+# they're doing or to remove the contents of the stage directory
+if( length(files_in_stage_dir) > 0 ){
+ stop( "\nThere are already files present in\n"
+       ,  file.path( getwd(), stage_dir )
+       , ".\nThis should not occur unless you're re-running specific chunks "
+       , "due to encountering local, technical difficulties.\n"
+       , "If this is the case, then comment out `if` statement that produced "
+       , "this error message.\n"
+       , "If this is not the case, then please move any previously generated "
+       , "output that you wish to keep to another appropriate location, remove "
+       , "all files from the aforementioned directory, and then try to run this"
+       , " script again from the beginning." )
+}
+
+# if( length(files_in_stage_dir) > 0 ){
+#   message( "Deleting files that were already present in ", stage_dir, "..." )
+#   unlink( file.path( stage_dir, "*" ), recursive = TRUE, force = TRUE )
+# }
+```
+
+
+# Create log directory in stage direcotry, and create performance log folder and run info folder in Results folder
+
+```{r}
+# Create directory for log files inside stage_dir unless it already exists:
+log_dir <- file.path(root_dir, stage_dir, "log")
+if( !dir.exists( log_dir ) ){
+  dir.create( log_dir ) }
+# Stop if creating directory failed:
+stopifnot( dir.exists( log_dir ) )
+
+
+# Create a folder in results directory for the performance log files:
+perf_log_dir <- file.path( results_dir, "performance_log" )
+if( !dir.exists( perf_log_dir ) ){ dir.create( perf_log_dir ) }
+
+# Create a folder in results directory for files with metadata related to the
+# run/session:
+run_info_dir <- file.path( results_dir, "run_info" )
+if( !dir.exists( run_info_dir ) ){ dir.create( run_info_dir ) }
+```
+
+
+# Log the parameters used in this script, as well as the arguments specified in `r arguments_path`
+
+Document the parameters used in this script and all the arguments from the specified arguments file by collating them in a data frame and exporting it to `pipeline_dir/Results/run_info`.
+
+```{r}
+# Add params from YAML to args list:
+args <- c(params, args)
+
+
+# args_df <- data.frame( `Argument or parameter name` = character(0)
+args_df <- dplyr::tibble( `Argument or parameter name` = character(0)
+                         , `Argument or parameter value` = character(0) )
+
+ for( i in 1:length(args) ){
+    # Add argument name to row i in df:
+    args_df[ i, 1] <- names(args[i])
+    # Add argument value to row i in df:
+    args_df[ i, 2] <- as.character(args[i])
+ }
+
+# Display table with all parameters/arguments
+args_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header(
+    title = md("Parameters given in YAML + arguments from `0000_arguments.R`")
+  )
+
+# Export the df to result directory:
+args_df %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir
+                    , paste0( "t01_"
+                              , stage_dir
+                              , "_arguments_and_parameters.csv" )
+  ) )
+
+rm(args_df, args)
+```
+
+
+# Import SNP x SL Pairings
+
+```{r}
+snp_sl <- feather::read_feather( snp_sl_pairings_path )
+
+# Glance at data in file:
+snp_sl %>%
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>% 
+  tab_header( title = paste0("First few rows of ", snp_sl_pairings_path) )
+
+tab <- snp_sl %>%
+  summarise( n()
+             , n_distinct(snp, state_locus )
+             , n_distinct(snp, sl_id )
+             , n_distinct(snp)
+             , n_distinct(sl_id)
+             , n_distinct(state_locus)
+             )
+
+# Display summary:
+tab %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>% 
+  tab_header( title = paste0("Summary of ", snp_sl_pairings_path) )
+
+# Export summary to run_info:
+tab %>% readr::write_excel_csv2(
+  file = file.path(run_info_dir, "t02_0501_snp_state_loci_summary.csv")
+)
+
+#TODO
+#qqq Can we drop the state_locus column in this script? I don't think it's actually used for anything
+```
+
+
+## Process `snp_sl`
+
+These files can be quite large as there can potentially be many combinations of SNP and SL in the final pairings. Convert the data frame to a `data.table` for more efficiency.
+
+```{r}
+# Convert `snp_sl` to data.table
+class( snp_sl )
+data.table::setDT(snp_sl)
+class( snp_sl )
+
+# Add column with number of SNP x SL pairings per SNP:
+snp_sl[ , n_pairings := .N, by = .(snp) ]
+
+# Number of unique SNPs on chromosome (used in logging etc.)
+n_unique_snps <- snp_sl[, uniqueN(snp)]
+# n_unique_snps <- length( unique( snp_sl[["snp"]]))
+```
+
+
+# `analyse_snp()` function
+
+Source function from R folder
+
+```{r}
+# Source function:
+if( file.exists( file.path( pipeline_dir, "R", "f_analyse_snp.R") ) ){
+  source( file.path( pipeline_dir, "R", "f_analyse_snp.R") )
+} else{
+  stop( file.path( pipeline_dir, "R", "f_analyse_snp.R"), " not found!" )
+}
+
+# Check that function was sourced:
+if( !exists("analyse_snp", where = globalenv() ) ){
+  stop( "The analyse_snp function is not available in the global environment."
+        , " Something may have gone wrong when sourcing "
+        , file.path( pipeline_dir, "R", "f_analyse_snp.R" )
+        , " ..."
+  )
+}
+```
+
+
+# Divide SNPs into chunks and determine chunk-specific execution order of SNPs
+
+```{r}
+# We have two aims here
+#   1) Split the SNPs into roughly evenly sized chunks (maximum possible number 
+#      of SNPs in a chunk is chunk_size) such that the distribution of the 
+#      number of SNP x SL pairings per SNP in each chunk are fairly similar.
+#      I.e. : spread the demanding SNPs fairly among the chunks.
+#   2) Within each chunk, determine an order in which to process the SNPs that 
+#      ensures  a) that all the most demanding SNPs are not being processed at 
+#                  the same time (to reduce risk of overburdening memory), while
+#                  also 
+#               b) getting the most time-demanding SNPs out of the way at an 
+#                  early stage so that we reduce the risk of having one last
+#                  "straggler" SNP with a lot of pairings delaying the 
+#                  completion time of the chunk.
+
+
+# CHECK CHUNK_SIZE ARGUMENT
+
+# If chunk_size > number of unique SNPs, set chunk_size to number of
+# unique SNPs
+if( chunk_size > n_unique_snps ){
+  warning("Specified `chunk_size` is greater than number of SNPs."
+          , "\nSetting `chunk_size` equal to number of SNPs, "
+          , "resulting in just one chunk."
+  )
+  chunk_size <- n_unique_snps
+}
+
+# CREATE DATA.TABLE WITH ONE ROW PER SNP
+
+# Create snp_order data.table by extracting only one row per unique SNP from
+# snp_sl and ordering rows by number of pairings per snp
+snp_order <- unique( snp_sl, by = "snp")[ order( -n_pairings ) ]
+snp_order
+
+# Remove unnecessary columns:
+snp_order[ , c( "state_locus", "scheme", "sl_id" ) := NULL ]
+snp_order
+
+
+# DETERMINE NUMBER OF CHUNKS BASED ON SPECIFIED CHUNK_SIZE
+
+# Number of chunks:
+n_chunks <- ceiling( length( unique( snp_sl[["snp"]])) / chunk_size )
+
+
+# DIVIDE SNPS INTO CHUNKS
+
+# Divide SNPs into chunks s.t. each chunk contains SNPs with an even
+# distribution of n_pairings:
+snp_order <- snp_order %>% 
+  arrange( desc(n_pairings) ) %>% 
+  mutate( chunk = rep( 1:n_chunks, length.out = n() ) )
+
+# Summary of chunk assignments (number of SNPs per chunk):
+tab <- snp_order %>% 
+  count( chunk ) %>% 
+  janitor::adorn_totals()
+
+tab %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = "Number of unique SNPs per chunk" )
+
+# Export summary with number of SNPs per chunk:
+tab %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir
+                    , paste0( "t03_n_snps_per_chunk.csv" ) )
+)
+
+# Summary of chunk assignments:
+chunk_summary_tab <- snp_order %>% 
+  group_by( chunk ) %>% 
+  summarise( min(n_pairings)
+             , quantile(n_pairings, 0.01)
+             , quantile(n_pairings, 0.1)
+             , quantile(n_pairings, 0.25)
+             , quantile(n_pairings, 0.33)
+             , median(n_pairings)
+             , mean(n_pairings)
+             , quantile(n_pairings, 0.67)
+             , quantile(n_pairings, 0.75)
+             , quantile(n_pairings, 0.99)
+             , max(n_pairings) 
+             )
+chunk_summary_tab %>%
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( 
+    title = "Distribution of pairings per SNP in the different chunks"
+  )
+
+# Export table with distribution of number of SNPs per chunk:
+chunk_summary_tab %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir
+                    , paste0( "t04_of_n_snps_distribution_per_chunk.csv" ) )
+)
+
+
+# Add empty column to add execution time to later
+chunk_summary_tab$execution_time_minutes <- NA
+# Add column with total amount of RAM
+chunk_summary_tab$totalram <- as.character( memuse::Sys.meminfo()$totalram )
+# Add empty columns to add memory info to later
+chunk_summary_tab$freeram_start_of_chunk <- NA
+chunk_summary_tab$freeram_after_parallel_snp_processing <- NA
+
+
+# DETERMINE ORDER OF SNPS WITHIN CHUNK
+
+# Inside each chunk, order the SNPs so that the more demanding SNPs are
+# performed early, and place the SNPs with the fewest pairing at the end
+snp_order <- snp_order %>% 
+  # Calculate the median n_pairings in each chunk, and create variable
+  # indicating whether SNP has n_pairings above chunk median:
+  group_by( chunk ) %>% 
+  mutate( chunk_n_pairings_median = median( n_pairings )
+          , n_pairings_above_median = 
+            ifelse( n_pairings > chunk_n_pairings_median
+                    , yes = 1, no = 0 )
+          ) %>% 
+  # Bin SNPs with n_pairings above chunk median based on n_pairings
+  group_by( chunk, n_pairings_above_median ) %>% 
+  mutate( above_median_bin = ifelse( 
+    n_pairings_above_median == 1
+    , yes = dplyr::ntile( n_pairings,  n = 3), no = NA
+  ) ) %>% 
+  # Create column with cyclical sequence of integers 1, 2, 3, ... for each bin
+  group_by( chunk, n_pairings_above_median, above_median_bin ) %>% 
+  mutate( above_median_order = 1:n() ) %>% 
+  # Now, inside each chunk, order the SNPs by 
+  # 1) whether they are above median or not (those > median come first),
+  # 2) their above_median_order, and lastly 
+  # 3) by their n_pairings in descending order (this last one should only affect
+  # the SNPs whose n_pairings is <= the chunk median)
+  ungroup( n_pairings_above_median, above_median_bin ) %>% 
+  arrange( desc( n_pairings_above_median ), above_median_order, desc( n_pairings ) ) %>% 
+  mutate( snp_order_in_chunk = 1:n() ) %>% 
+  ungroup() %>% 
+  arrange( chunk )
+# Turn back into a data.table:
+if( !("data.table" %in% class(snp_order)) ){
+  data.table::setDT( snp_order )
+}
+snp_order
+
+# Add column with overall SNP order
+snp_order <- snp_order %>% 
+  arrange( chunk, snp_order_in_chunk ) %>% 
+  mutate( snp_order_overall = 1:n() )
+snp_order
+
+
+# INSPECT RESULTING SNP ORDER
+
+# PLOT
+# Plot of the processing order of the SNPs in chunk 1
+tiff(
+  filename = file.path( run_info_dir, "fig_snp_processing_order.tif")
+  , width = 1200
+  , height = 700
+  , compression = "none"
+  , pointsize = 20
+)
+scattermore::scattermoreplot(
+  x = snp_order %>% filter(chunk == 1 ) %>% pull(snp_order_in_chunk)
+  , y = snp_order %>% filter(chunk == 1 ) %>% pull(n_pairings)
+  , main = paste0(
+    "Optimised SNP processing order based on the number of pairings per SNP"
+    , "
+    SNPs in chunk 1 - Chromosome ", chr_number )
+  , xlab = "The processing order of SNPs during parallel processing"
+  , ylab = "The number of pairings of the SNP being processed"
+  , cex = 2
+)
+dev.off()
+
+# TABLE WITH 5 FIRST/LAST ROWS 
+# Check the first and last 5 rows per chunk x n_pairings_above_median
+# combination:
+dplyr::bind_rows(
+  snp_order %>% 
+    group_by( chunk, n_pairings_above_median ) %>% 
+    # filter( snp_order_in_chunk %in% 1:5 ) %>% 
+    dplyr::slice( 1:5 ) %>% 
+    ungroup() %>% 
+    select( chunk, snp, n_pairings, chunk_n_pairings_median, snp_order_in_chunk ) %>% 
+    arrange( chunk, snp_order_in_chunk )
+  , snp_order %>% 
+    # group_by( chunk ) %>% 
+    group_by( chunk, n_pairings_above_median ) %>% 
+    # select( chunk, snp, n_pairings, snp_order_in_chunk ) %>% 
+    dplyr::slice( (n()-4):n() ) %>% 
+    ungroup() %>% 
+    select( chunk, snp, n_pairings, chunk_n_pairings_median, snp_order_in_chunk ) %>% 
+    # arrange( chunk )
+    arrange( chunk, snp_order_in_chunk )
+) %>%
+  arrange( chunk, snp_order_in_chunk ) %>% 
+  # group_by( chunk ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    paste0( "First and last 5 SNPs with `n_pairings` > chunk median"
+            , " and <br> first and last 5 SNPs with `n_pairings` <= chunk median"
+            , "<br>(by chunk)")
+  ))
+  
+# snp_order[chunk == 1 & n_pairings_above_median == 1]
+# snp_order[chunk == 1 & n_pairings_above_median == 0]
+
+# # Remove unnecessary columns:
+# snp_order[ , c( "chunk_n_pairings_median"
+#                 , "n_pairings_above_median"
+#                 , "above_median_bin"
+#                 , "above_median_order" ) := NULL ]
+# snp_order
+
+
+# ADD CHUNK-SPECIFIC SNP ORDER TO SNP_SL DATA.TABLE
+
+# Add columns from snp_order to snp_sl:
+snp_sl <- snp_sl %>%
+  dplyr::left_join( . 
+                    , snp_order[, .(snp, n_pairings, chunk, snp_order_in_chunk
+                                    , snp_order_overall) ]
+                    , by = c("snp", "n_pairings") 
+  )
+snp_sl
+
+# Sort the rows in snp_sl by the recently determined chunks and chunk-specific
+# snp orders
+data.table::setorder( snp_sl, chunk, snp_order_in_chunk )
+snp_sl
+
+# Keep snp_order while trying new ordering code
+# # snp_order is no longer needed:
+# rm(snp_order)
+```
+
+
+## Chunk summary
+
+```{r }
+# Create chunk-wise summary of snp_sl:
+summary_snp_sl <- snp_sl %>%
+  group_by( chunk ) %>% 
+  summarise( min(snp_order_overall), max(snp_order_overall), n_distinct(snp)
+             , n_distinct(snp, sl_id) )
+
+# Summary of chunks in terms of overall SNP order:
+summary_snp_sl %>% 
+  janitor::adorn_totals( where = "row", fill = "-", na.rm = TRUE, name = "Total"
+                         , `n_distinct(snp)`, `n_distinct(snp, sl_id)`
+  ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+# Export summary:
+summary_snp_sl %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir
+                    , paste0( "t05_chunk_summary_wrt_snp_order.csv" ) )
+)
+
+
+# Stop unless the sum of summary_snp_sl$n_distinct(snp, sl_id) = nrow(snp_sl):
+stopifnot( sum( summary_snp_sl$`n_distinct(snp, sl_id)` ) == nrow(snp_sl) ) 
+
+# Stop unless the sum of summary_snp_sl$n_distinct(snp) = n_unique_snps:
+stopifnot( sum( summary_snp_sl$`n_distinct(snp)` ) == n_unique_snps ) 
+
+
+# Set chunk as key for fast filtering later:
+data.table::setkey( snp_sl, chunk )
+```
+
+
+# Create performance log file
+
+Containing 3 columns:  
+  
+1. `chunk`- Have one column with chunk number (where 0 means that this row pertains to the entire script and not one particular chunk)
+2. `var` - One column containing the name of variable related to performance that is being logged 
+3. `val` - the actual value of the variable being logged
+
+```{r}
+performance_log <- data.frame(
+  chunk = integer()
+  , var = character()
+  , val = character()
+)
+
+perf_log_path <- file.path( 
+  perf_log_dir
+  , paste0( format( script_start_datetime, "%Y-%m-%d_%H%M%S" )
+            , "_performance_log.csv")
+)
+
+performance_log %>% readr::write_excel_csv2( ., file = perf_log_path )
+
+# Add some basic information re. this run to the performance log:
+data.frame( chunk = 0
+            , var = c( "chr_number"
+                       , "n_cores"
+                       , "n_chunks"
+                       , "chunk_size"
+                       , "n_available_cores"
+                      )
+            , val = c( as.character( chr_number )
+                       ,as.character( n_cores )
+                       , as.character( n_chunks )
+                       , as.character( chunk_size )
+                       , as.character( parallel::detectCores() )
+                       )
+) %>% 
+  readr::write_excel_csv2(
+    ., file = perf_log_path, append = TRUE # append row to file 
+  )
+```
+
+
+# Export SNP processing order
+
+```{r}
+# EXPORT COLUMNS FROM snp_order
+
+# These can come in handy if a run breaks down after one or more chunks have
+# been successfully processed, due to local, technical circumstances such as
+# forced updates, interruptions etc.
+# If the user wants to avoid re-running the SNPs from the successfully processed
+# chunks, they can use this file to ensure that the new run they only are not
+# skipping any SNPs
+snp_order_export <- snp_order %>% 
+  select( snp, chunk, snp_order_in_chunk, snp_order_overall ) %>% 
+  distinct()
+
+stopifnot(nrow(snp_order_export) == nrow(snp_order))
+
+# Export to feather file in run info directory (Results folder)
+snp_order_export %>% feather::write_feather(
+  .
+  , file.path( run_info_dir
+               , paste0( stage_dir, "_snp_processing_order.feather")
+  ) )
+rm(snp_order_export) # no longer needed
+```
+
+
+# Vector with first and last SNP in each chunk
+
+So that we can save the log-files belonging to these SNPs, which will make it easier to track how much time it takes to get a cluster up and working between the chunk executions.
+
+```{r}
+first_last_snp_in_each_chunk <- snp_sl %>% 
+  select( snp, n_pairings, chunk, snp_order_in_chunk, snp_order_overall ) %>% 
+  distinct() %>% 
+  group_by( chunk ) %>% 
+  mutate( min_snp_order_overall = min(snp_order_overall)
+          , max_snp_order_overall = max(snp_order_overall) ) %>% 
+  ungroup() %>% 
+  filter( snp_order_overall == min_snp_order_overall | 
+            snp_order_overall == max_snp_order_overall )
+
+first_last_snp_in_each_chunk <- first_last_snp_in_each_chunk %>% pull(snp)
+
+```
+
+
+
+# Import strata file, map file and GWAS file 
+
+```{r}
+
+# LOAD THE OTHER NECESSARY DATA 
+
+# LOAD ALL SL STRATA FROM FF FILE ----------------------------------------------
+
+# Check first that the ff object stored inside strata_path has the correct name:
+stopifnot(
+  "There can only be one ff object inside 'strata_path' and it must be named \"all_sl_strata_ff\"." =
+    names( ff::ffinfo( file = strata_path )$RData ) == "all_sl_strata_ff"
+)
+
+# Unzip + load the file:
+strata_ff_file <- ff::ffload( file = strata_path
+                              , overwrite = TRUE
+                              , rootpath = stage_dir
+                              # When 'rootpath' is set to stage_dir when using 
+                              # ffsave in 0501, then using 'rootpath' = 
+                              # stage_dir here results in the restored/extracted
+                              # .ff file being placed in this stage_dir (0701)
+)
+# (Now strata_ff_file contains the name of the ff file that has been restored)
+dim(all_sl_strata_ff)
+
+# Stop unless strata_ff_file = "0501_all_sl_strata.ff"
+stopifnot( strata_ff_file == "0501_all_sl_strata.ff" )
+
+# Check that all the SLs have the same number of unique strata numbers:
+all_sl_unique_values <- sapply( 1:nrow(all_sl_strata_ff), function(sl_row){
+  length( unique(all_sl_strata_ff[ sl_row, ] ) )
+} )
+stopifnot(
+  "All the SLs in the ff_matrix from 0501 must have the exact same number of unique strata" =
+    length( unique(all_sl_unique_values)) == 1
+)
+
+# Check that all the SLs have the same strata values:
+# (i.e. that all the SLs have the unique strata numbers 1,2 and  3 for example)
+all_sl_unique_values <- lapply( 1:nrow(all_sl_strata_ff), function(sl_row){
+  sort( unique(all_sl_strata_ff[ sl_row, ] ) ) %>% t() %>% as.data.frame.matrix()
+} )
+
+# Since we just checked that the SLs' number of unique strata are the same, we
+# can combine the one-row data frames with the unique strata values into one:
+all_sl_unique_values <- dplyr::bind_rows(all_sl_unique_values)
+
+# For each column, check that there it contains only one unique value:
+stopifnot( all( apply( all_sl_unique_values, MARGIN = 2
+            , function(col){ length(unique(col)) == 1 }) == TRUE
+) )
+rm(all_sl_unique_values)
+#xxxxx Copy these two tests to 0501.
+
+
+# IMPORT GWAS MAP FILE ---------------------------------------------------------
+
+# Import map file belonging to the GWAS fileset generated in the previous stage:
+map <- data.table::fread(
+  file.path(gwas_fileset_dir, paste0(gwas_fileset_dir, "_gwas.map" ) )
+)
+
+# Overview of map file:
+tab <- map %>% 
+  summarise( n(), n_distinct(snp), n_distinct(snp, b), unique(chrom))
+
+# Display overview:
+tab %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer() %>% 
+  tab_header(
+    title =
+      file.path(gwas_fileset_dir, paste0(gwas_fileset_dir, "_gwas.map" ) )
+  )
+
+# Export overview:
+tab %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir, "t06_0502_gwas_map_summary.csv")
+)
+rm(tab)
+
+
+# Stop if map file contains duplicate SNP IDs:
+stopifnot( nrow(map) == length( unique( map$snp) ) )
+
+# Throw error unless SNPs in map file are identical to SNPs in SNP x SL pairings
+stopifnot( all( sort( map$snp ) ==
+                  snp_sl %>% pull( snp ) %>% unique() %>% sort() )
+)
+
+
+# LOAD HAPLIN GWAS DATA FROM PREVIOUS STAGE ------------------------------------
+
+# Load the data from the newly generated ffarchive 
+gwas_all_snps <- Haplin::genDataLoad(
+  filename = gwas_fileset_name 
+  , dir.in =  gwas_fileset_dir )
+
+# Throw error unless identical SNPs in map file vs. haplin ffarchive:
+stopifnot( all( sort( map$snp) == sort( gwas_all_snps$aux$marker.names ) ) )
+
+
+
+# ADD SNP INDEX IN HAPLIN DATA TO map file -------------------------------------
+
+# When using Haplin::genDataGetPart, the 'markers' argument must be the number
+# representing the index of the SNP we wish to extract in the haplin.data
+# object containing all SNPs. Therefore, we will add a column with this index to
+# the map data frame. This should result in a new column whose elements are
+# equal to their row number.
+# map$haplin_index <- NA
+data.table::setkey(map, b )
+
+system.time({
+  map <- map %>% 
+    rowwise( ) %>% 
+    mutate( haplin_index = which( gwas_all_snps$aux$marker.names == snp ) ) %>% 
+    ungroup()
+  setDT(map)
+})
+
+
+# This method takes a little longer than just using the fact that the index =
+# the row number in the map file, but it is more robust against potential future
+# changes in Haplin.
+
+# Test if haplin_index equals row number:
+all( map$haplin_index == 1:nrow(map) )
+
+```
+
+
+# Test random SNP before starting parallel execution
+
+Run a test on a random SNP using a version of `analyse_snp()` that contains additional tests. These tests check for problems that would most likely be present for all SNPs.
+
+```{r}
+# SOURCE THE FUNCTION
+
+if( file.exists(
+  file.path( pipeline_dir, "R", "f_analyse_snp_for_testing_pre_execution.R") 
+) ){
+  source(
+    file.path( pipeline_dir, "R", "f_analyse_snp_for_testing_pre_execution.R")
+  )
+} else{
+  stop(
+    file.path( pipeline_dir, "R", "f_analyse_snp_for_testing_pre_execution.R")
+    , " not found!" )
+}
+
+# Check that function was sourced:
+if( !exists("analyse_snp_for_testing_pre_execution", where = globalenv() ) ){
+  stop(
+    "The analyse_snp_for_testing_pre_execution function is not available in the"
+    , " global environment. Something may have gone wrong when sourcing "
+    , file.path( pipeline_dir, "R", "f_analyse_snp_for_testing_pre_execution.R" )
+    , " ..."
+  )
+}
+
+# SELECT RANDOM SNP
+
+# Select a random SNP, preferably one with relatively few SL pairings
+set.seed(314)
+random_test_snp <- snp_order %>% 
+  filter( n_pairings_above_median == 0 ) %>% 
+  mutate( median_n_pairings = median(n_pairings) ) %>% 
+  filter( n_pairings <= median_n_pairings ) %>% 
+  sample_n( 1 )
+random_test_snp
+
+
+# TEST RANDOM SNP
+
+snp_test_res <- analyse_snp_for_testing_pre_execution(
+      snp_id = random_test_snp$snp
+      , snp_sl_dt = snp_sl # data.table with all snp x sl pairings 
+      , n_unique_chr_snps = 1 # no of unique SNPs on chr being analysed
+      , chunk_number = random_test_snp$chunk # chunk currently being executed
+      , max_chunk_snp_number = 1 # highest SNP "number" in this chunk
+      , first_last_snp =  random_test_snp$snp # vector of snp ids whose log file we want to keep
+      , strata_ff_matrix = all_sl_strata_ff # ff_matrix with all SL strata
+      # , root_dir = root_dir # Path to root directory in rmd
+      , root_dir = root_dir # Path to root directory in rmd
+      # , stage_dir = stage_dir # "0701"
+      , stage_dir = stage_dir # "0701"
+      , log_dir = log_dir # Path to log folder
+      , map_file = map
+      , gwas = gwas_all_snps
+      , n_cores = n_cores 
+      # number of separate processes => process directories in play. Determines 
+      # what a reasonable value for log_limit is.
+      , ewas_family_member = ewas_family_member
+      , haplin_args = haplin_args
+      , keep_max_x_log_files = 1000
+      # Vector with strings containing the names of p-values from the results of
+      # Haplin::gxe() to return:
+      , gxe_pvals = gxe_pvals
+    )
+
+# Check that the resulting data.table is as expected
+stopifnot( is.data.table( snp_test_res ) )
+stopifnot( nrow( snp_test_res ) == random_test_snp$n_pairings )
+stopifnot( all( gxe_pvals %in% colnames( snp_test_res ) ) )
+
+# Remove unnecessary data:
+rm( snp_test_res, analyse_snp_for_testing_pre_execution, random_test_snp )
+```
+
+
+
+
+
+# Perform chunk-wise, parallel execution of `analyse_snp()`
+
+```{r}
+invisible( gc() )
+
+# Print available memory:
+message( "Memory info before starting cluster:" )
+memory_status <- memuse::Sys.meminfo()
+
+# Export memory status to run info
+data.frame( memuse_Sys_meminfo_totalram = as.character( memory_status$totalram )
+            , memuse_Sys_meminfo_freeram = as.character( memory_status$freeram )
+) %>% readr::write_excel_csv2(
+  file = file.path( run_info_dir
+                    , "t07_memory_status_before_starting_cluster.csv")
+)
+rm(memory_status)
+
+
+# START TIMER
+
+# Start parallel processing timer:
+parallel_start_time <- Sys.time()
+
+# Add parallel_start_time to performance log:
+data.frame( chunk = 0
+            , var = "parallel_start_time"
+            , val = as.character( parallel_start_time )
+) %>% 
+  readr::write_excel_csv2( 
+    . , file = perf_log_path, append = TRUE # append row to file
+  )
+
+
+# LOAD PACKAGES FOR PARALLELL PROCESSING
+
+# Load packages necessary for parallel processing:
+library(foreach)
+library(doParallel)
+
+# START CHUNK CLUSTER -----
+  
+# Clean up any remnants from previous clusters
+# (Code from answer from Steve Weston on Stack Overflow dated 4/8/2014 )
+foreach_env <- foreach:::.foreachGlobals
+rm( list = ls( name = foreach_env ), pos = foreach_env )
+# Close any open connections (this should not affect the ff data)
+base::closeAllConnections()
+if( nrow( base::showConnections() ) > 0 ){
+  warning( "Open connections were identified prior to chunk-wise, parallel "
+           , "execution of analyse_snp()." )
+}
+Sys.sleep(2)
+
+# Garbage collection (see if this makes starting up cluster more stable)
+invisible( gc() )
+
+
+# Create parallel socket cluster
+# Get start time of makePSOCKcluster:
+makePSOCKcluster_start_time <- Sys.time()
+# Get end time of makePSOCKcluster:
+# cl <- parallel::makePSOCKcluster( n_cores )
+cl <- parallel::makePSOCKcluster( n_cores, outfile = "" )
+makePSOCKcluster_end_time <- Sys.time()
+
+# Add makePSOCKcluster-times to performance log:
+data.frame( chunk = 0
+            , var = c( "makePSOCKcluster_start_time"
+                       , "makePSOCKcluster_end_time")
+            , val = c( as.character( makePSOCKcluster_start_time )
+                       , as.character( makePSOCKcluster_end_time ) )
+) %>% 
+  readr::write_excel_csv2( 
+    . , file = perf_log_path, append = TRUE # append row to file
+  )
+
+# Stop if cluster failed to initiate
+if( !("cluster" %in% class( cl )) ){ stop("Cluster failed to initiate.") }
+
+# Print available memory:
+message( "Memory info after starting cluster:" )
+memuse::Sys.meminfo()
+
+# CHUNK-WISE PARALLEL PROCESSING --------------------------------------------
+
+unique_chunk_numbers <-  unique(snp_sl[["chunk"]] )
+
+chunk_result_paths <- lapply( unique_chunk_numbers, function(chunk_i){
+  
+  #TODO #xxxx Insert tryCatch here so that if error occurs during a particular chunk, the other chunks are not affected? Or should the tryCatch be placed right before foreach()?  
+  
+  # Garbage collection:
+  invisible( gc() )
+  
+  # Start chunk timer
+  chunk_time_start <- Sys.time()
+  
+  # Add amount of free ram at the start of chunk to chunk_summary_tab:
+  chunk_summary_tab <<- chunk_summary_tab %>% 
+    mutate( freeram_start_of_chunk = ifelse(
+      chunk == chunk_i
+      , yes = as.character( memuse::Sys.meminfo()$freeram )
+      , no = freeram_start_of_chunk )
+    )
+  
+  # START CHUNK LOG -----
+  
+  # Initialise log file in "stage_dir/log", using chunk number, and timestamp in
+  # the file name:
+  log_filename <- file.path(
+    log_dir
+    , paste0( "chunk", sprintf("%05d", chunk_i ), "_"
+              , format( Sys.time(), "%Y-%m-%d_%H%M%S" ) 
+    ) )
+  
+  # Open log:
+  log_path <- logr::log_open( 
+    file_name = log_filename
+    # Place the log file in a directory named "log" inside the working directory:
+    , logdir = TRUE
+    # Show traceback if error occurs:
+    , traceback = TRUE
+    # Disable automatic printing of notes (notes show Log Print Time and Elapsed
+    # Time for every entry in the log -> clutter)
+    , show_notes = FALSE
+  )
+  paste0( "Executing SNP chunk number ", chunk_i, "..." ) %>% logr::put()
+  paste0( "chunk_size: ", chunk_size
+          , "\n\nNumber of SNPs in this chunk: "
+          , summary_snp_sl$`n_distinct(snp)`[chunk_i]
+          , "\n\nNumber of cores: ", n_cores ) %>% 
+    logr::put()
+  
+  # Log available memory:
+  logr::put( "Memory info before starting parallel processing of chunk:" 
+             , show_notes = TRUE)
+  logr::put(memuse::Sys.meminfo(), show_notes = TRUE )
+  
+  
+  # SUBSET DATA FOR CURRENT CHUNK -----
+  
+  # Use only rows from snp_sl and map data.tables belonging to chunk SNPs:
+  snp_sl_chunk <- snp_sl[ chunk == chunk_i, ]
+  map_file_chunk <- map[ snp %in% snp_sl_chunk$snp ]
+  
+  
+  # Get vector with the unique chunk SNPs ordered by snp_order_in_chunk column:
+  unique_chunk_snps_sorted <- unique( snp_sl_chunk[ , snp ] )
+  
+  # Check that the SNPs in the vector are correctly ordered: 
+  stopifnot( identical(
+    unique_chunk_snps_sorted
+    , snp_sl_chunk %>% arrange(snp_order_in_chunk) %>% pull(snp) %>% unique()
+  ) )
+  
+  # Remove columns from snp_sl_chunk that are not used by analyse_snp:
+  snp_sl_chunk <- snp_sl_chunk[ 
+    , !c("scheme", "state_locus", "chunk", "n_pairings", "snp_order_in_chunk")
+  ]
+  
+  # Subset GWAS data
+  
+  # Use genDataGetPart to create a haplin.data object containing only the SNPs
+  # in the current chunk
+  gwas_chunk <- Haplin::genDataGetPart(
+    data.in = gwas_all_snps
+    , design = haplin_args$haplin_design
+    , markers = map[ snp %in% unique_chunk_snps_sorted]$haplin_index
+    #qqq Do we need the cc and sex arguments to be parameterised as well?
+    # Name of file with subset contains SNP ID and Process ID:
+    , file.out = paste0( stage_dir
+                         , "_gwas_chunk_"
+                         , chunk_i )
+    # (File names contain process ID as an extra insurance against different
+    # processes attempting to write to the same files.)
+    , dir.out = stage_dir
+    , overwrite = TRUE
+  )
+  
+  
+  # Update the haplin_index column in map:chunk to reflect the newly subsetted
+  # GWAS data:
+  system.time({
+    map_file_chunk[, haplin_index :=
+                     which( gwas_chunk$aux$marker.names == snp ) ]
+    # map_file_chunk <- map_file_chunk %>% 
+    #   rowwise( ) %>% 
+    #   mutate( haplin_index = which( gwas_chunk$aux$marker.names == snp ) ) %>% 
+    #   ungroup()
+    # setDT(map_file_chunk)
+  })
+  
+  # Check that map_file_chunk contains all the SNPs in the current chunk:
+  stopifnot( all( unique_chunk_snps_sorted %in% map_file_chunk$snp ) )
+  
+  
+  # Ensure that ff_matrix with all SL strata is loaded properly:
+  # (If the ff_matrix is closed, open it with 'readonly' setting)
+  if( ff::is.open(all_sl_strata_ff) == FALSE ){
+    # Open with 'readonly':
+    open(all_sl_strata_ff, readonly = TRUE )
+  }
+  
+  
+  # Get number of unique SNPs in chunk (used in logging)
+  n_unique_chunk_snps <- length( unique( snp_sl_chunk[ , snp ] ) )
+  # Check that this number is the same as the one listed in summary_snp_sl
+  stopifnot( n_unique_chunk_snps == summary_snp_sl$`n_distinct(snp)`[chunk_i] )
+  
+  # The index of the last SNP in the chunk to be analysed
+  max_chunk_snp_number <- max( snp_sl_chunk$snp_order_overall )
+  # (Added to SNP log file names so that user can keep track of progress)
+  
+  message( "Starting analysis of SNPs in chunk number ", chunk_i, " out of "
+           , max(snp_sl$chunk) )
+  
+  # PERFORM PARALELL PROCESSING OF ALL SNPS IN CURRENT CHUNK
+  
+  # Get start time of registerDoParallel:
+  registerDoParallel_start_time <- Sys.time()
+  
+  # Register the parallel backend with the foreach package
+  doParallel::registerDoParallel( cl, cores = n_cores )
+
+  # Get time of foreach call:
+  foreach_call_time <- Sys.time()
+  
+  # Add times to performance log:
+  data.frame( chunk = chunk_i
+              , var = c( "registerDoParallel_start_time"
+                         , "foreach_call_time" )
+              , val = c( as.character( registerDoParallel_start_time )
+                         , as.character( foreach_call_time ) )
+  ) %>% 
+    readr::write_excel_csv2( 
+      . , file = perf_log_path, append = TRUE # append row to file
+    )
+  
+  # For each SNP in the current chunk ...
+  results_chunk <- foreach::foreach( 
+    i = 1:length( unique_chunk_snps_sorted )
+    # # For bug fixing when foreach throws error stating "task x failed".
+    # # Task = iteration/i, and x = the x-th SNP in unique_chunk_snps_sorted.
+    # # Replace x with the number in the error message to re-run the
+    # # error-generating SNP by itself
+    # i = x
+    # i = 1:length( unique_chunk_snps_sorted[1:x] ) # All SNPs up until the xth
+    , .packages = c( "data.table"
+                     , "dplyr"
+                     , "ff"
+                     , "Haplin"
+                     , "logr"
+                     , "readr"
+                     # Dependencies:
+                     , unique( c(
+                       tools::package_dependencies("dplyr")[[1]]
+                       , tools::package_dependencies("data.table")[[1]]
+                       , tools::package_dependencies("ff")[[1]]
+                       , tools::package_dependencies("Haplin")[[1]]
+                       , tools::package_dependencies("logr")[[1]]
+                       , tools::package_dependencies("readr")[[1]]
+                     ) )
+    )
+    # , .packages = c("dplyr", "Haplin")
+    # , .packages = c("dplyr", "Haplin", "reshape2")
+    # , .export = ls(.GlobalEnv)
+    # , .export = c("analyse_snp")
+    , .export = c( "all_sl_strata_ff"
+                   , "haplin_args"
+                   , "gxe_pvals"
+                   , "log_dir"
+                   # , "snp_sl_chunk"
+                   # , "map_file_chunk"
+                   , "gwas_chunk"
+                   , "root_dir" # params
+                   , "stage_dir" # params
+                   , "n_cores" # params
+                   , "ewas_family_member" # params
+                   , "analyse_snp"
+                   , "n_unique_snps"
+                   # For use in logging;
+                   , "chunk_i" # chunk number
+                   , "max_chunk_snp_number" # snp index of the last chunk snp
+                   , "first_last_snp_in_each_chunk" # vector of snp ids
+                   , "perf_log_path" # path to performance log
+    )
+    # Variables to explicitly exclude from being exporting since they are not
+    # needed inside foreach loop
+    , .noexport = c( "gwas_all_snps"
+                     , "snp_sl"
+                     , "map"
+                     )
+    , .errorhandling = "stop" # this is the default in foreach
+    # , .errorhandling = "pass" #xxxxx check this out
+  ) %dopar% {
+    # ... do the following:
+    
+    # If i == 1, register the time so that we can gauge the time it took to get
+    # all the cores ready
+    if( i == 1 ){
+      # Add start time of iteration 1 to performance log:
+      data.frame( chunk = chunk_i
+                  , var = "iteration_1_start_time"
+                  , val = as.character(  Sys.time() )
+      ) %>% 
+        readr::write_excel_csv2( 
+          . , file = perf_log_path, append = TRUE # append row to file
+        )
+    }
+    
+    snp_id_i <- unique( snp_sl_chunk$snp )[i]
+    
+    
+    # RUN ANALYSE_SNP FUNCTION -----
+    
+    snp_i_res <- analyse_snp(
+      snp_id = snp_id_i
+      , snp_sl_dt = snp_sl_chunk # data.table with all snp x sl pairings 
+      , n_unique_chr_snps = n_unique_snps # no of unique SNPs on chr being analysed
+      , chunk_number = chunk_i # chunk currently being executed
+      , max_chunk_snp_number = max_chunk_snp_number # highest SNP "number" in this chunk
+      , first_last_snp = first_last_snp_in_each_chunk # vector of snp ids whose log file we want to keep
+      , strata_ff_matrix = all_sl_strata_ff # ff_matrix with all SL strata
+      # , root_dir = root_dir # Path to root directory in rmd
+      , root_dir = root_dir # Path to root directory in rmd
+      # , stage_dir = stage_dir # "0701"
+      , stage_dir = stage_dir # "0701"
+      , log_dir = log_dir # Path to log folder
+      , map_file = map_file_chunk
+      , gwas = gwas_chunk
+      # , n_cores = n_cores 
+      , n_cores = n_cores 
+      # number of separate processes => process directories in play. Determines 
+      # what a reasonable value for log_limit is.
+      # , ewas_family_member = ewas_family_member
+      , ewas_family_member = ewas_family_member
+      , haplin_args = haplin_args
+      , keep_max_x_log_files = 1000
+      # Vector with strings containing the names of p-values from the results of
+      # Haplin::gxe() to return:
+      , gxe_pvals = gxe_pvals
+    )
+    return( snp_i_res )
+  } # end %dopar%
+  
+  # message( "Parallel execution of `analyse_snp` complete." )
+  
+  # Get the time for chunk-specific foreach completion
+  chunk_parallel_complete_time <- Sys.time()
+  
+  # Add times to performance log:
+  data.frame( chunk = chunk_i
+              , var = "chunk_parallel_complete_time"
+              , val = as.character( chunk_parallel_complete_time )
+  ) %>% 
+    readr::write_excel_csv2( 
+      . , file = perf_log_path, append = TRUE # append row to file
+    )
+  
+  
+  # Add amount of free ram right after parallel execution to chunk_summary_tab:
+  chunk_summary_tab <<- chunk_summary_tab %>% 
+    mutate( freeram_after_parallel_snp_processing = ifelse(
+      chunk == chunk_i
+      , yes = as.character( memuse::Sys.meminfo()$freeram )
+      , no = freeram_after_parallel_snp_processing )
+    )
+  
+  
+  # LOG CHUNK-WISE PARALLEL EXECUTION TIME -----
+  
+  chunk_parallel_execution_time <-
+    chunk_parallel_complete_time - chunk_time_start
+  
+  # Log available memory:
+  logr::put( "Memory info after parallel execution of analyse_snp():" )
+  logr::put(memuse::Sys.meminfo())
+
+  message( 
+    "Parallelised chunk execution time: "
+    , round( as.numeric( chunk_parallel_execution_time, units = "mins" ), 3)
+    , " minutes" )
+  
+  # Log chunk execution time to chunk log:
+  logr::put( paste0( 
+    "Parallelised chunk execution time: "
+    , round( as.numeric( chunk_parallel_execution_time, units = "mins" ), 3)
+    , " minutes"
+  ) )
+  
+  # Log chunk's average execution time per SNP to chunk log:
+  logr::put( paste0( 
+    "Average parallelised chunk execution time per SNP: "
+    , round( as.numeric( chunk_parallel_execution_time, units = "secs" ) /
+               n_unique_chunk_snps, 5 )
+    , " seconds"
+  ) )
+  
+  
+  # # SHUT DOWN CHUNK CLUSTER -----
+  # 
+  # # Shut down the workers used by foreach:
+  # doParallel::stopImplicitCluster()
+  # # Clean up any remnants from previous clusters
+  # # (Code from answer from Steve Weston on Stack Overflow dated 4/8/2014 )
+  # foreach_env <- foreach:::.foreachGlobals
+  # rm( list = ls( name = foreach_env ), pos = foreach_env )
+  # # Close any open connections (this should not affect the ff data)
+  # base::closeAllConnections()
+  # base::showConnections()
+  # 
+  #   
+  # # Garbage collection:
+  # invisible( gc() )
+  # 
+  #  # Log available memory:
+  # logr::put( "Memory info after shutting down cluster:" )
+  # logr::put(memuse::Sys.meminfo())
+  
+  
+  # DELETE GWAS CHUNK SUBSET AND ACCOMPANYING FF ARCHIVE ------
+  
+  # (Note: .ff file located in the path given in
+  # attributes(gwas_chunk$gen.data[[1]]) does not appear to get deleted
+  # automatically upon removal of haplin.data object and ff-archive  )
+  
+  rm( gwas_chunk )
+  gwas_chunk_files <- list.files( path = stage_dir
+                                  , pattern = paste0( stage_dir
+                                                      , "_gwas_chunk_"
+                                                      , chunk_i )
+                                  , full.names = TRUE )
+  unlink( gwas_chunk_files, force = TRUE )
+  invisible( gc() )
+  
+  
+  # PROCESS CHUNK RESULTS ------
+  
+  message( "Process chunk results..." )
+  
+  processing_time_start <- Sys.time()
+  
+  # Check that the total number of rows/pairings across all data.tables in
+  # results_chunk is equal to the number of rows/pairings in snp_sl_chunk:
+  if( sum( sapply( results_chunk, nrow ) ) != nrow(snp_sl_chunk) ){
+    stop(
+      "The total number of rows/pairings combined in all the data.tables in "
+      , "`results_chunk` should be equal to the number of rows/pairings in "
+      , "snp_sl_chunk!\n"
+      , "sum( sapply( results_chunk, nrow ) ) = "
+      , sum( sapply( results_chunk, nrow ) )
+      , "\nnrow(snp_sl_chunk)) = "
+      , nrow(snp_sl_chunk) )
+  }
+  
+  # WE WILL SPLIT CHUNK RESULTS INTO TWO LISTS:
+  # 1) PAIRINGS *WITHOUT* ANY P-VALUE ESTIMATES DUE TO ERRORS/WARNINGS, AND 
+  # 2) PAIRINGS WITH P-VALUE ESTIMATES
+  
+  # PROCESS PAIRINGS WITHOUT ESTIMATES -----
+  
+  # Remove all rows in the result data.tables belonging to SNP x SL pairings
+  # that that have p-values in all p-value columns:
+  # (Keep only rows where one or all p-values are NA)
+  results_chunk_no_estimates <- lapply( results_chunk, function(snp){
+    
+    if( all( gxe_pvals %in% colnames( snp ) ) ){
+      # Get numbers of any rows where the p-value in gxe_pvals, or at least one
+      # of the p-values in gxe_pvals, is NA
+      na_rows <- which( apply( is.na( snp[ , gxe_pvals, with = FALSE ] )
+                               # check for any NA by row in the gxe_pvals cols:
+                               , MARGIN = 1 
+                               , FUN = any ) )
+      # Select only rows where at least one p-value is NA:
+      snp[na_rows, ]
+      # snp %>% filter( is.na( !!sym(gxe_pvals[1]) ) )
+    } else{
+      stop( "Names of p-value column(s) in data.tables resulting from "
+           , "analyse_snp() do not match with gxe_pvals.")
+    }
+  } )
+  
+  # Combine the error/warning pairings into one data.table:
+  results_chunk_no_estimates <- 
+    data.table::rbindlist( results_chunk_no_estimates )
+  
+  # Every single cell in a p-value column should be NA:
+  # (i.e. if gxe() returns NA for one hypothesis test, it should return NA for
+  # all the others as well because has gone very wrong if one hypothesis test
+  # fails while others don't.)
+  if( !all( results_chunk_no_estimates %>%
+      select( matches( paste0(gxe_pvals, collapse = "|") )  ) %>% 
+      is.na() )
+  ){
+    # Add column with the sum of the p-value columns:
+    results_chunk_no_estimates[ 
+      , pval_rowsum := rowSums(.SD, na.rm = TRUE)
+      , .SDcols = grep( paste0(gxe_pvals, collapse = "|")
+                        , names(results_chunk_no_estimates) )
+    ]
+    # Get snp x sl combo of pairings where the sum is not zero, i.e. pairings
+    # where not all p-values are NA:
+    problematic_pairings <- results_chunk_no_estimates %>% 
+      filter( !(pval_rowsum %in% 0) ) %>% 
+      mutate( pairing = paste0( snp, " x ", sl_id ), .keep = "none"  ) %>% 
+      pull()
+    
+    stop( "The pairings in 'results_chunk_no_estimates' should have NA in all "
+          , "the p-value columns, but this does not appear to be the case."
+          , " Please investigate whether there is a problem with Haplin::gxe or"
+          , " the analyse_snp function. If Haplin::gxe returns NA for one "
+          , "hypothesis test, then it should return NA for all the other "
+          , "hypothesis tests as well. Thus, the p-values of pairings should "
+          , "either be all NAs or all valid numerics ε [0,1].\n"
+          , "The following pairings have both NA and non-NA values in their "
+          , "p-value columns:\n"
+          , paste0(problematic_pairings, collapse = "\n")
+          )
+  }
+  
+  # Remove p-value columns:
+  results_chunk_no_estimates <- results_chunk_no_estimates %>%
+    select( -matches( paste0(gxe_pvals, collapse = "|") )  )
+  
+  # If there are rows in results_chunk_no_estimates where gxe_execution_allowed
+  # is not equal to FALSE, issue a warning
+  if(
+    nrow(results_chunk_no_estimates) > 0 &
+    !all( identical(
+      FALSE, unique( results_chunk_no_estimates$gxe_execution_allowed
+    ) ) ) ){
+    warning( "\nThere are rows in `results_chunk_no_estimates` where "
+             , "gxe_execution_allowed is NOT equal to FALSE/0!\n" )
+  }
+  
+  # Make column containing snp id and sl id to be used as rownames later: 
+  results_chunk_no_estimates[ , snp_x_sl := paste0( snp, "_", sl_id ) ]
+  # Remove column with snp and sl id: 
+  results_chunk_no_estimates[ , c("snp", "sl_id") := NULL ]
+  
+  
+  # Convert error_code, warning_code and gxe_execution_allowed to integer:
+  results_chunk_no_estimates[ , error_code := as.integer( error_code ) ]
+  results_chunk_no_estimates[ , warning_code := as.integer( warning_code ) ]
+  results_chunk_no_estimates[ 
+    , gxe_execution_allowed := as.integer( gxe_execution_allowed ) ]
+  
+  
+  # PROCESS PAIRINGS WITH P-VALUE ESTIMATES -----
+  
+  results_chunk_estimates <- lapply( results_chunk, function(snp){
+    # Remove all rows in the result data.tables belonging to SNP x SL pairings
+    # where at least one of the p-values failed to be estimated
+    if( all( gxe_pvals %in% colnames( snp ) ) ){
+      # Get numbers of any rows where the p-value in gxe_pvals, or at least one
+      # of the p-values in gxe_pvals, is NA
+      na_rows <- which( apply( is.na( snp[ , gxe_pvals, with = FALSE ] )
+                               # check for any NA by row in the gxe_pvals columns:
+                               , MARGIN = 1 
+                               , FUN = any ) )
+      # Select only rows none of the p-values are NA:
+      if( length( na_rows ) == 0){
+       snp 
+      } else{
+        snp[-na_rows, ] 
+      }
+      # (Return snp without subsetting if na_rows is integer(0), otherwise an
+      # empty data.table is returned)
+      # snp %>% filter( !is.na( !!sym(gxe_pvals[1]) ) )
+    } else{
+      stop( "Names of p-value column(s) in data.tables resulting from "
+            , "analyse_snp() do not match with gxe_pvals.")
+    }
+  } )
+  
+  
+  # Stop unless the number of pairings in results_chunk equals the number of
+  # pairings in the "no estimates" list + the number of pairings in the list
+  # with estimates:
+  stopifnot(
+    sum( sapply(results_chunk, nrow) ) == 
+      nrow(results_chunk_no_estimates) +
+      sum( sapply(results_chunk_estimates, nrow) )
+  )
+  
+  # COMBINE ALL DATA.TABLES WITH P-VALUE ESTIMATES INTO ONE LARGE DATA.TABLE
+  results_chunk_estimates <- data.table::rbindlist( results_chunk_estimates )
+  
+  # Check that gxe_execution_allowed = TRUE for all pairings:
+  all( results_chunk_estimates[ , gxe_execution_allowed ] == TRUE )
+  
+  # # Remove error and warning code columns:
+  # results_chunk_estimates[ , c("error_code", "warning_code") := NULL ]
+  
+  # Convert error_code, warning_code and gxe_execution_allowed to integer:
+  results_chunk_estimates[ , error_code := as.integer( error_code ) ]
+  results_chunk_estimates[ , warning_code := as.integer( warning_code ) ]
+  results_chunk_estimates[ 
+    , gxe_execution_allowed := as.integer( gxe_execution_allowed ) ]
+  # results_chunk_estimates <- results_chunk_estimates %>%
+  #   mutate(
+  #     error_code = as.integer(error_code)
+  #     , warning_code = as.integer(warning_code)
+  #     , gxe_execution_allowed = as.integer(gxe_execution_allowed)
+  #   ) # This caused annoying .internal.selfref warning
+  
+  # Make column containing snp id and sl id to be used as rownames later: 
+  results_chunk_estimates[ , snp_x_sl := paste0( snp, "_", sl_id ) ]
+  # Remove column with snp and sl id: 
+  results_chunk_estimates[ , c("snp", "sl_id") := NULL ]
+  
+  # Log size of data.table:
+  logr::put( "object.size(results_chunk_estimates) = " )
+  format( object.size(results_chunk_estimates), "Mb") %>% logr::put()
+  
+  # data.table is now ready to be written to the stage directory. It will later
+  # be read, alongside all the results from all the other chunks, and then
+  # combined with the data.tables from the other chunks into one large
+  # data.table. Then, the data.table will be converted to a matrix and then an
+  # ff_matrix.
+  
+  
+  
+  # EXPORT CHUNK-SPECIFIC RESULTS (WITH AND WITHOUT P-VALUE ESTIMATES) -----
+  
+  # EXPORT RESULTS FROM PAIRINGS WITH ESTIMATES TO STAGE DIRECTORY:
+  results_chunk_estimates_path <- file.path(
+    root_dir
+    , stage_dir
+    , paste0( "chunk_", sprintf("%03d", chunk_i ), "_estimates.feather" )
+  )
+  
+  feather::write_feather( x = results_chunk_estimates
+                          , path = results_chunk_estimates_path )
+  
+  
+  # EXPORT PAIRINGS WITHOUT ESTIMATES TO STAGE DIRECTORY:
+  results_chunk_no_estimates_path <- file.path(
+    root_dir
+    , stage_dir
+    , paste0( "chunk_", sprintf("%03d", chunk_i )
+              , "_error_warning_pairings.feather" )
+  )
+  feather::write_feather( x = results_chunk_no_estimates
+                          , path = results_chunk_no_estimates_path )
+  
+  
+  
+  # LOG CHUNK RESULTS PROCESSING TIME -----
+  
+  chunk_time_end <- Sys.time()
+  processing_execution_time <- chunk_time_end - processing_time_start
+  
+  # Log chunk execution time to chunk log:
+  logr::put( paste0( 
+    "Processing chunk results and exporting data.tables to feather files took "
+    , round( as.numeric( processing_execution_time, units = "mins" ), 3)
+    , " minutes."
+  ) )
+  
+  # LOG TOTAL CHUNK EXECUTION TIME ------
+  
+  chunk_execution_time <- difftime( chunk_time_end, chunk_time_start
+                                    , units = "mins" )
+
+  message(
+    "Chunk execution time (including processing and exporting chunk results): "
+    , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+    , " minutes."
+  )
+  
+  # Log chunk execution time to chunk log:
+  logr::put( paste0( 
+    "Chunk execution time (including processing and exporting chunk results): "
+    , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+    , " minutes."
+  ) )
+  
+  # Log chunk execution time per SNP to chunk log:
+  logr::put( paste0( 
+    "Chunk execution time (including processing and exporting chunk results) / "
+    , " number of unique SNPs being analysed: "
+    , round( as.numeric( chunk_execution_time, units = "secs" ) /
+               n_unique_chunk_snps , 5)
+    , " seconds."
+  ) )
+  
+  
+  # Add chunk execution time to chunk_summary_tab:
+  chunk_summary_tab <<- chunk_summary_tab %>% 
+    mutate( execution_time_minutes = ifelse( chunk == chunk_i
+                                     , yes = chunk_execution_time
+                                     , no = execution_time_minutes )
+    )
+
+     
+  
+  # At this stage, all the results from the newly processed chunk should be
+  # written to a feather file containing one row per SNP x SL combination
+  # in that particular chunk.
+  
+  message( "Chunk ", chunk_i, " complete.\n" )
+  message( n_unique_snps - max( snp_sl_chunk[["snp_order_overall"]] )
+  # message( n_unique_snps - max( snp_sl_chunk[["snp_index"]] )
+           , " SNPs remaining.\n" )
+  
+  # CHECK THAT THE FILES CONTAINING RESULTS AND ERROR/WARNING CODES EXIST:
+  if( !file.exists( results_chunk_estimates_path ) ){
+    logr::sep( paste0( results_chunk_no_estimates_path, " does not exist!") )
+  }
+  if( !file.exists( results_chunk_no_estimates_path ) ){
+    logr::sep( paste0( results_chunk_no_estimates_path, " does not exist!") )
+  }
+    
+  # Close chunk log:
+  logr::log_close()
+  
+  
+  # RETURN DATA.FRAME CONTAINING PATHS TO FILES 
+  # (They serve as indicators that writing results to feather files was
+  # successful and they can be used later when importing the files to combine
+  # them into an ff_matrix)
+  return( 
+    data.table::data.table(
+      "results_chunk_estimates_path" = results_chunk_estimates_path
+      , "results_chunk_no_estimates_path" = results_chunk_no_estimates_path
+    )
+  )
+  
+}) # end of chunk-wise lapply function
+
+
+
+
+# OPEN CHROMOSOME LOG -----
+
+# Create log file for the entire chunk-wise parallel execution in
+# "stage_dir/log", using chromosome number and timestamp in the file name:
+chromosome_log_filename <- file.path(
+  log_dir
+  , paste0( sprintf("Chr%02d", chr_number )
+            , "_chunkwise_parallel_execution_"
+            , format( Sys.time(), "%Y-%m-%d_%H%M" ))
+) 
+# Open log:
+log_path <- logr::log_open( 
+  file_name = chromosome_log_filename
+  # Place the log file in a directory named "log" inside the working directory:
+  , logdir = TRUE
+  # Show traceback if error occurs:
+  , traceback = TRUE
+  # Disable automatic printing of notes (notes show Log Print Time and Elapsed
+  # Time for every entry in the log -> clutter)
+  , show_notes = FALSE
+)
+
+# LOG NUMBER OF CORES -----
+
+paste0( "Number of cores: ", n_cores, " \n " ) %>% logr::put( )
+
+# LOG CHUNK SIZE -----
+
+paste0( "Chunk size: ", chunk_size, " \n " ) %>% logr::put( )
+
+# LOG TOTAL CHUNK EXECUTION TIME -----
+
+# Calculate parallel processing execution time:
+parallel_execution_time <- Sys.time() - parallel_start_time
+
+cat( "Executed chunks:"
+     , paste0( unique_chunk_numbers, collapse = ", " )
+     , "\n\nTotal execution time of all parallised chunks:\t\t\t"
+     , round( as.numeric( parallel_execution_time, units = "hours" ), 3 )
+     , "hours"
+     , "\nAverage execution time per chunk:\t"
+     , round( as.numeric( parallel_execution_time, units = "hours" ) / 
+                length( unique_chunk_numbers )
+              , 3 )
+     , "hours\n"
+)
+
+# Log execution time of all the chunks and average chunk time:
+paste0( "Executed chunks: "
+     , paste0( unique_chunk_numbers, collapse = ", " )
+     , "\n\nTotal execution time of all parallised chunks: "
+     , round( as.numeric( parallel_execution_time, units = "hours" ), 3 )
+     , " hours\n"
+     , "\nAverage execution time per chunk: "
+     , round( as.numeric( parallel_execution_time, units = "hours" ) / 
+                length( unique_chunk_numbers )
+              , 3 )
+     , " hours\n "
+) %>%
+ logr::put( )
+
+# Log average time per snp:
+paste0( "Average execution time per SNP: "
+     , round(
+       as.numeric( parallel_execution_time, units = "secs" ) /
+         n_unique_snps
+       , 3 )
+     , " seconds\n\n " ) %>%
+  logr::put( console = FALSE )
+
+
+# Log total number of SNP x SL combinations:
+paste0( "Total number of unique SNPs: "
+        , prettyNum( n_unique_snps, big.mark = "," )
+        , "\n\n"
+        , "\nTotal number of SNP x SL pairings: "
+        , prettyNum( nrow(snp_sl), big.mark = "," )
+        , "\n\n "
+        ) %>%
+  # strwrap() # let's you see which text is divided into different paragraphs
+  logr::put( console = FALSE )
+
+
+
+
+
+# LOG TABLES RELATED TO CHUNK COUNT, SCHEME COUNT ETC -----
+logr::sep( "Chunk and scheme related tables"  )
+
+"\nDistribution of pairings across schemes\n\n" %>% logr::put()
+snp_sl %>% count( scheme ) %>% janitor::adorn_totals() %>% logr::put()
+
+"\n\nDistribution of pairings and unique SNPs across chunks\n\n" %>% logr::put()
+summary_snp_sl %>% janitor::adorn_totals() %>% logr::put()
+
+# LOG CHUNK SUMMARY TABLE WITH STATS ABOUT N_PAIRINGS AND CHUNK EXECUTION TIMES -----
+logr::sep( "\n\nChunk summary table with total chunk execution times: "  )
+
+chunk_summary_tab %>% 
+  select( chunk, contains("0.25"), contains("median"), contains("0.75")
+          , contains("max"), execution_time_minutes ) %>% 
+  mutate( execution_time_hours = execution_time_minutes / 60 ) %>% 
+  janitor::adorn_totals( ,,,, contains("execution_time") ) %>% 
+  logr::put()
+
+
+# Export chunk_summary_table to csv file:
+chunk_summary_tab %>% 
+  mutate( execution_time_hours = execution_time_minutes / 60 ) %>% 
+  readr::write_excel_csv2(
+    file = file.path(
+      perf_log_dir
+      , paste0( format(script_start_datetime, "%Y-%m-%d_%H%M%S" )
+                , "_chunk_summary_with_execution_times.csv" ) )
+  )
+
+# PROCESS CHUNK PATH DATA ----
+
+# Combine all data.tables with paths to result files into one large data.table:
+chunk_result_paths <- data.table::rbindlist( chunk_result_paths )
+
+# Look at chunk_result_paths
+
+# Display gt table in viewer console:
+chunk_result_paths %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>% 
+  tab_header( title = md(
+    "Paths to files containing results from the chunk executions -
+    One file per chunk with all SNP x SL pairings with p-value estimates, and
+    one file per chunk with all pairings **without** p-value estimates due to error/warnings"
+  ) )
+
+# Write chunk_result_paths to stage_dir:
+chunk_result_paths %>% 
+  readr::write_excel_csv2(
+    file.path( root_dir, stage_dir, "chunk_result_paths.csv")
+  )
+
+# Log path to written file:
+paste0(
+  "Data table containing paths to chunk-specific result files written to: "
+  , file.path( root_dir, stage_dir, "chunk_result_paths.csv") ) %>%
+  logr::put()
+  
+"\n\nchunk_result_paths:\n" %>% logr::put()
+chunk_result_paths %>% logr::put()
+
+# # Import again if restarting session is necessary:
+# chunk_result_paths <- readr::read_csv2(
+#     file.path( root_dir, stage_dir, "chunk_result_paths.csv")
+#   )
+# data.table::setDT(chunk_result_paths)
+```
+
+
+
+```{r}
+# invisible( gc() )
+# 
+# # START TIMER
+# 
+# # Start parallel processing timer:
+# parallel_start_time <- Sys.time()
+# 
+# 
+# # LOAD PACKAGES FOR PARALLELL PROCESSING
+# 
+# # Load packages necessary for parallel processing:
+# library(foreach)
+# library(doParallel)
+# 
+# # CHUNK-WISE PARALLEL PROCESSING --------------------------------------------
+# 
+# unique_chunk_numbers <-  unique(snp_sl[["chunk"]] )
+# 
+# chunk_result_paths <- lapply( unique_chunk_numbers, function(chunk_i){
+# 
+#   #TODO #xxxx Insert tryCatch here so that if error occurs during a particular chunk, the other chunks are not affected? Or should the tryCatch be placed right before foreach()?
+# 
+#   # Garbage collection:
+#   invisible( gc() )
+# 
+#   # Start chunk timer
+#   chunk_time_start <- Sys.time()
+# 
+#   # START CHUNK LOG -----
+# 
+#   # Initialise log file in "stage_dir/log", using chunk number, and timestamp in
+#   # the file name:
+#   log_filename <- file.path(
+#     log_dir
+#     , paste0( "chunk", sprintf("%05d", chunk_i ), "_"
+#               , format( Sys.time(), "%Y-%m-%d_%H%M" )
+#     ) )
+# 
+#   # Open log:
+#   log_path <- logr::log_open(
+#     file_name = log_filename
+#     # Place the log file in a directory named "log" inside the working directory:
+#     , logdir = TRUE
+#     # Show traceback if error occurs:
+#     , traceback = TRUE
+#     # Disable automatic printing of notes (notes show Log Print Time and Elapsed
+#     # Time for every entry in the log -> clutter)
+#     , show_notes = FALSE
+#   )
+#   paste0( "Executing SNP chunk number ", chunk_i, "..." ) %>% logr::put()
+#   paste0( "chunk_size: ", chunk_size
+#           , "\n\nNumber of SNPs in this chunk: "
+#           , summary_snp_sl$`n_distinct(snp)`[chunk_i]
+#           , "\n\nNumber of cores: ", n_cores ) %>%
+#     logr::put()
+# 
+#   # Log available memory:
+#   logr::put( "Memory info before starting cluster:" , show_notes = TRUE)
+#   logr::put(memuse::Sys.meminfo(), show_notes = TRUE )
+# 
+# 
+#   # START CHUNK CLUSTER -----
+# 
+#   # Clean up any remnants from previous clusters
+#   # (Code from answer from Steve Weston on Stack Overflow dated 4/8/2014 )
+#   foreach_env <- foreach:::.foreachGlobals
+#   rm( list = ls( name = foreach_env ), pos = foreach_env )
+#   # Close any open connections (this should not affect the ff data)
+#   base::closeAllConnections()
+#   if( nrow( base::showConnections() ) > 0 ){
+#     warning( "Open connections were identified prior to chunk-wise, parallel "
+#              , "execution of analyse_snp()." )
+#   }
+#   Sys.sleep(2)
+# 
+#   # Garbage collection (see if this makes starting up cluster more stable)
+#   invisible( gc() )
+# 
+#   # Create parallel socket cluster
+#   cl <- parallel::makePSOCKcluster( n_cores )
+#   Sys.sleep(2)
+# 
+#   # Return empty data.table without paths to result files if cluster failed to
+#   # initiate
+#   if( !("cluster" %in% class( cl )) ){
+#     return(
+#       data.table::data.table(
+#         "results_chunk_estimates_path" = character()
+#         , "results_chunk_no_estimates_path" = character()
+#       )
+#     )
+#   }
+# 
+#   # Register the parallel backend with the foreach package
+#   doParallel::registerDoParallel( cl, cores = n_cores )
+#   Sys.sleep(2)
+# 
+# 
+#   # Log available memory:
+#   logr::put( "Memory info after starting cluster:" )
+#   logr::put(memuse::Sys.meminfo(), show_notes = TRUE)
+# 
+# 
+#   # SUBSET DATA FROM CURRENT CHUNK -----
+# 
+#   # Use only rows from snp_sl and map data.tables belonging to chunk SNPs:
+#   snp_sl_chunk <- snp_sl[ chunk == chunk_i, ]
+#   map_file_chunk <- map[ snp %in% snp_sl_chunk$snp ]
+# 
+# 
+#   # Get vector with the unique chunk SNPs ordered snp_order_in_chunk column:
+#   unique_chunk_snps_sorted <- unique( snp_sl_chunk[ , snp ] )
+# 
+#   # Check that the SNPs in the vector are correctly ordered:
+#   stopifnot( identical(
+#     unique_chunk_snps_sorted
+#     , snp_sl_chunk %>% arrange(snp_order_in_chunk) %>% pull(snp) %>% unique()
+#   ) )
+# 
+#   # Get number of unique SNPs in chunk (used in logging)
+#   n_unique_chunk_snps <- length( unique( snp_sl_chunk[ , snp ] ) )
+#   # Check that this number is the same as the one listed in summary_snp_sl
+#   stopifnot( n_unique_chunk_snps == summary_snp_sl$`n_distinct(snp)`[chunk_i] )
+# 
+#   # The index of the last SNP in the chunk to be analysed
+#   max_chunk_snp_number <- max( snp_sl_chunk$snp_order_overall )
+#   # (Added to SNP log file names so that user can keep track of progress)
+# 
+#   message( "Starting analysis of SNPs in chunk number ", chunk_i, " out of "
+#            , max(snp_sl$chunk) )
+# 
+#   # PERFORM PARALELL PROCESSING OF ALL SNPS IN CURRENT CHUNK
+# 
+#   # For each SNP in the current chunk ...
+#   results_chunk <- foreach::foreach(
+#     # i = 47
+#     i = 1:length( unique_chunk_snps_sorted )
+#     # i = 1:length( unique( snp_sl_chunk$snp ) )
+#     , .packages = c( "data.table"
+#                      , "dplyr"
+#                      , "ff"
+#                      , "Haplin"
+#                      , "logr"
+#                      , "readr"
+#                      # Dependencies:
+#                      , unique( c(
+#                        tools::package_dependencies("dplyr")[[1]]
+#                        , tools::package_dependencies("data.table")[[1]]
+#                        , tools::package_dependencies("ff")[[1]]
+#                        , tools::package_dependencies("Haplin")[[1]]
+#                        , tools::package_dependencies("logr")[[1]]
+#                        , tools::package_dependencies("readr")[[1]]
+#                      ) )
+#     )
+#     # , .packages = c("dplyr", "Haplin")
+#     # , .packages = c("dplyr", "Haplin", "reshape2")
+#     # , .export = ls(.GlobalEnv)
+#     # , .export = c("analyse_snp")
+#     , .export = c( "all_sl_strata_ff"
+#                    , "haplin_args"
+#                    , "log_dir"
+#                    # , "snp_sl_chunk"
+#                    # , "map_file_chunk"
+#                    , "gwas_all_snps"
+#                    , "root_dir" # params
+#                    , "stage_dir" # params
+#                    , "n_cores" # params
+#                    , "ewas_family_member" # params
+#                    , "analyse_snp"
+#                    , "n_unique_snps"
+#                    # For use in logging;
+#                    , "chunk_i" # chunk number
+#                    , "max_chunk_snp_number" # snp index of the last chunk snp
+#     )
+#   ) %dopar% {
+#     # ... do the following:
+#     # getwd()
+# 
+#     snp_id_i <- unique( snp_sl_chunk$snp )[i]
+# 
+#     # Test if the analyse_snp function was successfully exported to the workers:
+#     if( !exists("analyse_snp") ){
+#       stop( "The analyse_snp function was not exported to process "
+#             , Sys.getpid()
+#             , "."
+#             )
+#     }
+# 
+#     snp_i_res <- analyse_snp(
+#       snp_id = snp_id_i
+#       , snp_sl_dt = snp_sl_chunk # data.table with all snp x sl pairings
+#       , n_unique_chr_snps = n_unique_snps # no of unique SNPs on chr being analysed
+#       , chunk_number = chunk_i # chunk currently being executed
+#       , max_chunk_snp_number = max_chunk_snp_number # chunk currently being executed
+#       , strata_ff_matrix = all_sl_strata_ff # ff_matrix with all SL strata
+#       # , root_dir = root_dir # Path to root directory in rmd
+#       , root_dir = root_dir # Path to root directory in rmd
+#       # , stage_dir = stage_dir # "0701"
+#       , stage_dir = stage_dir # "0701"
+#       , log_dir = log_dir # Path to log folder
+#       , map_file = map_file_chunk
+#       , gwas = gwas_all_snps
+#       # , n_cores = n_cores
+#       , n_cores = n_cores
+#       # number of separate processes => process directories in play. Determines
+#       # what a reasonable value for log_limit is.
+#       # , ewas_family_member = ewas_family_member
+#       , ewas_family_member = ewas_family_member
+#       , haplin_args = haplin_args
+#     )
+#     return( snp_i_res )
+#   } # end %dopar%
+# 
+#   message( "Parallel execution of `analyse_snp` complete." )
+# 
+#   # Log available memory:
+#   logr::put( "Memory info after parallel execution of analyse_snp():" )
+#   logr::put(memuse::Sys.meminfo())
+# 
+# 
+#   # LOG CHUNK-WISE PARALLEL EXECUTION TIME -----
+# 
+#   chunk_time_end <- Sys.time()
+#   chunk_execution_time <- chunk_time_end - chunk_time_start
+# 
+#   message( "Parallelised chunk execution time: "
+#            , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+#            , " minutes" )
+# 
+#   # Log chunk execution time to chunk log:
+#   logr::put( paste0(
+#     "Parallelised chunk execution time: "
+#     , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+#     , " minutes"
+#   ) )
+# 
+#   # Log chunk's average execution time per SNP to chunk log:
+#   logr::put( paste0(
+#     "Average parallelised chunk execution time per SNP: "
+#     , round( as.numeric( chunk_execution_time, units = "secs" ) /
+#                n_unique_chunk_snps, 5 )
+#     , " seconds"
+#   ) )
+# 
+# 
+#   # SHUT DOWN CHUNK CLUSTER -----
+# 
+#   # Shut down the workers used by foreach:
+#   doParallel::stopImplicitCluster()
+#   # Clean up any remnants from previous clusters
+#   # (Code from answer from Steve Weston on Stack Overflow dated 4/8/2014 )
+#   foreach_env <- foreach:::.foreachGlobals
+#   rm( list = ls( name = foreach_env ), pos = foreach_env )
+#   # Close any open connections (this should not affect the ff data)
+#   base::closeAllConnections()
+#   base::showConnections()
+# 
+# 
+#   # Garbage collection:
+#   invisible( gc() )
+# 
+#    # Log available memory:
+#   logr::put( "Memory info after shutting down cluster:" )
+#   logr::put(memuse::Sys.meminfo())
+# 
+# 
+#   # PROCESS CHUNK RESULTS ------
+# 
+#   message( "Process chunk results..." )
+# 
+#   processing_time_start <- Sys.time()
+# 
+#   # Check that the total number of rows/pairings across all data.tables in
+#   # results_chunk is equal to the number of rows/pairings in snp_sl_chunk:
+#   if( sum( sapply( results_chunk, nrow ) ) != nrow(snp_sl_chunk) ){
+#     stop(
+#       "The total number of rows/pairings combined in all the data.tables in "
+#       , "`results_chunk` should be equal to the number of rows/pairings in "
+#       , "snp_sl_chunk!\n"
+#       , "sum( sapply( results_chunk, nrow ) ) = "
+#       , sum( sapply( results_chunk, nrow ) )
+#       , "\nnrow(snp_sl_chunk)) = "
+#       , nrow(snp_sl_chunk) )
+#   }
+# 
+#   # WE WILL SPLIT CHUNK RESULTS INTO TWO LISTS:
+#   # 1) PAIRINGS *WITHOUT* ANY P-VALUE ESTIMATES DUE TO ERRORS/WARNINGS, AND
+#   # 2) PAIRINGS WITH P-VALUE ESTIMATES
+# 
+#   # PROCESS PAIRINGS WITHOUT ESTIMATES -----
+# 
+#   results_chunk_no_estimates <- lapply( results_chunk, function(snp){
+#     # Remove all rows in the result data.tables belonging to SNP x SL pairings
+#     # that did not result in errors or warnings
+#     snp[ error_code > 0 | warning_code > 0, ]
+#   } )
+# 
+#   # Combine the error/warning pairings into one data.table:
+#   results_chunk_no_estimates <-
+#     data.table::rbindlist( results_chunk_no_estimates )
+# 
+#   # Check that all p-value columns contain only NA:
+#   stopifnot(
+#     all( results_chunk_no_estimates %>%
+#       select( starts_with("haplo.freq"), starts_with("child") ) %>%
+#       is.na() )
+#   )
+# 
+#   # Remove p-value columns:
+#   results_chunk_no_estimates <- results_chunk_no_estimates %>%
+#     select( -starts_with("haplo.freq"), -starts_with("child") )
+# 
+#    # Make column containing snp id and sl id to be used as rownames later:
+#   results_chunk_no_estimates[ , snp_x_sl := paste0( snp, "_", sl_id ) ]
+#   # Remove column with snp and sl id:
+#   results_chunk_no_estimates[ , c("snp", "sl_id") := NULL ]
+# 
+# 
+#   # PROCESS PAIRINGS WITH P-VALUE ESTIMATES -----
+# 
+#   results_chunk_estimates <- lapply( results_chunk, function(snp){
+#     # Remove all rows in the result data.tables belonging to SNP x SL pairings
+#     # where there was an error or a warning
+#     snp[ error_code == 0 & warning_code == 0, ]
+#   } )
+# 
+# 
+#   # Stop unless the number of pairings in results_chunk equals the number of
+#   # pairings in the "no estimates" list + the number of pairings in the list
+#   # with estimates:
+#   stopifnot(
+#     sum( sapply(results_chunk, nrow) ) ==
+#       nrow(results_chunk_no_estimates) +
+#       sum( sapply(results_chunk_estimates, nrow) )
+#   )
+# 
+#   # COMBINE ALL DATA.TABLES WITH P-VALUE ESTIMATES INTO ONE LARGE DATA.TABLE
+#   results_chunk_estimates <- data.table::rbindlist( results_chunk_estimates )
+# 
+# 
+#   # Check that all error and warning codes are equal to 0:
+#   all( results_chunk_estimates[ , error_code ] == 0 )
+#   all( results_chunk_estimates[ , warning_code ] == 0 )
+# 
+#   # Remove error and warning code columns:
+#   results_chunk_estimates[ , c("error_code", "warning_code") := NULL ]
+# 
+#   # Make column containing snp id and sl id to be used as rownames later:
+#   results_chunk_estimates[ , snp_x_sl := paste0( snp, "_", sl_id ) ]
+#   # Remove column with snp and sl id:
+#   results_chunk_estimates[ , c("snp", "sl_id") := NULL ]
+# 
+#   # Log size of data.table:
+#   logr::put( "object.size(results_chunk_estimates) = " )
+#   format( object.size(results_chunk_estimates), "Mb") %>% logr::put()
+# 
+#   # data.table is now ready to be written to the stage directory. It will later
+#   # be read, alongside all the results from all the other chunks, and then
+#   # combined with the data.tables from the other chunks into one large
+#   # data.table. Then, the data.table will be converted to a matrix and then an
+#   # ff_matrix.
+# 
+# 
+# 
+#   # EXPORT CHUNK-SPECIFIC RESULTS (WITH AND WITHOUT P-VALUE ESTIMATES) -----
+# 
+#   # EXPORT RESULTS FROM PAIRINGS WITH ESTIMATES TO STAGE DIRECTORY:
+#   results_chunk_estimates_path <- file.path(
+#     root_dir
+#     , stage_dir
+#     , paste0( "chunk_", sprintf("%03d", chunk_i ), "_estimates.feather" )
+#   )
+# 
+#   feather::write_feather( x = results_chunk_estimates
+#                           , path = results_chunk_estimates_path )
+# 
+# 
+#   # EXPORT PAIRINGS WITHOUT ESTIMATES TO STAGE DIRECTORY:
+#   results_chunk_no_estimates_path <- file.path(
+#     root_dir
+#     , stage_dir
+#     , paste0( "chunk_", sprintf("%03d", chunk_i )
+#               , "_error_warning_pairings.feather" )
+#   )
+#   feather::write_feather( x = results_chunk_no_estimates
+#                           , path = results_chunk_no_estimates_path )
+# 
+# 
+# 
+#   # LOG CHUNK RESULTS PROCESSING TIME -----
+# 
+#   chunk_time_end <- Sys.time()
+#   processing_execution_time <- chunk_time_end - processing_time_start
+# 
+#   # Log chunk execution time to chunk log:
+#   logr::put( paste0(
+#     "Processing chunk results and exporting data.tables to feather files took "
+#     , round( as.numeric( processing_execution_time, units = "mins" ), 3)
+#     , " minutes."
+#   ) )
+# 
+#   # LOG TOTAL CHUNK EXECUTION TIME ------
+# 
+#   chunk_execution_time <- chunk_time_end - chunk_time_start
+# 
+#   message(
+#     "Chunk execution time (including processing and exporting chunk results): "
+#     , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+#     , " minutes."
+#   )
+# 
+#   # Log chunk execution time to chunk log:
+#   logr::put( paste0(
+#     "Chunk execution time (including processing and exporting chunk results): "
+#     , round( as.numeric( chunk_execution_time, units = "mins" ), 3)
+#     , " minutes."
+#   ) )
+# 
+#   # Log chunk execution time per SNP to chunk log:
+#   logr::put( paste0(
+#     "Chunk execution time (including processing and exporting chunk results) / "
+#     , " number of unique SNPs being analysed: "
+#     , round( as.numeric( chunk_execution_time, units = "secs" ) /
+#                n_unique_chunk_snps , 5)
+#     , " seconds."
+#   ) )
+# 
+# 
+#   # At this stage, all the results from the newly processed chunk should be
+#   # written to a feather file containing one row per SNP x SL combination
+#   # in that particular chunk.
+# 
+#   message( "Chunk ", chunk_i, " complete.\n" )
+#   message( n_unique_snps - max( snp_sl_chunk[["snp_order_overall"]] )
+#   # message( n_unique_snps - max( snp_sl_chunk[["snp_index"]] )
+#            , " SNPs remaining.\n" )
+# 
+#   # CHECK THAT THE FILES CONTAINING RESULTS AND ERROR/WARNING CODES EXIST:
+#   if( !file.exists( results_chunk_estimates_path ) ){
+#     logr::sep( paste0( results_chunk_no_estimates_path, " does not exist!") )
+#   }
+#   if( !file.exists( results_chunk_no_estimates_path ) ){
+#     logr::sep( paste0( results_chunk_no_estimates_path, " does not exist!") )
+#   }
+# 
+#   # Close chunk log:
+#   logr::log_close()
+# 
+# 
+#   # RETURN DATA.FRAME CONTAINING PATHS TO FILES
+#   # (They serve as indicators that writing results to feather files was
+#   # successful and they can be used later when importing the files to combine
+#   # them into an ff_matrix)
+#   return(
+#     data.table::data.table(
+#       "results_chunk_estimates_path" = results_chunk_estimates_path
+#       , "results_chunk_no_estimates_path" = results_chunk_no_estimates_path
+#     )
+#   )
+# 
+# }) # end of chunk-wise lapply function
+# 
+# 
+# 
+# 
+# # OPEN CHROMOSOME LOG -----
+# 
+# # Create log file for the entire chunk-wise parallel execution in
+# # "stage_dir/log", using chromosome number and timestamp in the file name:
+# chromosome_log_filename <- file.path(
+#   log_dir
+#   , paste0( sprintf("Chr%02d", chr_number )
+#             , "_chunkwise_parallel_execution_"
+#             , format( Sys.time(), "%Y-%m-%d_%H%M" ))
+# )
+# # Open log:
+# log_path <- logr::log_open(
+#   file_name = chromosome_log_filename
+#   # Place the log file in a directory named "log" inside the working directory:
+#   , logdir = TRUE
+#   # Show traceback if error occurs:
+#   , traceback = TRUE
+#   # Disable automatic printing of notes (notes show Log Print Time and Elapsed
+#   # Time for every entry in the log -> clutter)
+#   , show_notes = FALSE
+# )
+# 
+# # LOG NUMBER OF CORES -----
+# 
+# paste0( "Number of cores: ", n_cores, " \n " ) %>% logr::put( )
+# 
+# # LOG CHUNK SIZE -----
+# 
+# paste0( "Chunk size: ", chunk_size, " \n " ) %>% logr::put( )
+# 
+# # LOG TOTAL CHUNK EXECUTION TIME -----
+# 
+# # Calculate parallel processing execution time:
+# parallel_execution_time <- Sys.time() - parallel_start_time
+# 
+# cat( "Executed chunks:"
+#      , paste0( unique_chunk_numbers, collapse = ", " )
+#      , "\n\nTotal execution time of all parallised chunks:\t\t\t"
+#      , round( as.numeric( parallel_execution_time, units = "hours" ), 3 )
+#      , "hours"
+#      , "\nAverage execution time per chunk:\t"
+#      , round( as.numeric( parallel_execution_time, units = "hours" ) /
+#                 length( unique_chunk_numbers )
+#               , 3 )
+#      , "hours\n"
+# )
+# 
+# # Log execution time of all the chunks and average chunk time:
+# paste0( "Executed chunks: "
+#      , paste0( unique_chunk_numbers, collapse = ", " )
+#      , "\n\nTotal execution time of all parallised chunks: "
+#      , round( as.numeric( parallel_execution_time, units = "hours" ), 3 )
+#      , " hours\n"
+#      , "\nAverage execution time per chunk: "
+#      , round( as.numeric( parallel_execution_time, units = "hours" ) /
+#                 length( unique_chunk_numbers )
+#               , 3 )
+#      , " hours\n "
+# ) %>%
+#  logr::put( )
+# 
+# # Log average time per snp:
+# paste0( "Average execution time per SNP: "
+#      , round(
+#        as.numeric( parallel_execution_time, units = "secs" ) /
+#          n_unique_snps
+#        , 3 )
+#      , " seconds\n\n " ) %>%
+#   logr::put( console = FALSE )
+# 
+# 
+# # Log total number of SNP x SL combinations:
+# paste0( "Total number of unique SNPs: "
+#         , prettyNum( n_unique_snps, big.mark = "," )
+#         , "\n\n"
+#         , "\nTotal number of SNP x SL pairings: "
+#         , prettyNum( nrow(snp_sl), big.mark = "," )
+#         , "\n\n "
+#         ) %>%
+#   # strwrap() # let's you see which text is divided into different paragraphs
+#   logr::put( console = FALSE )
+# 
+# 
+# 
+# 
+# 
+# # LOG TABLES RELATED TO CHUNK COUNT, SCHEME COUNT ETC -----
+# logr::sep( "Chunk and scheme related tables"  )
+# 
+# "\nDistribution of pairings across schemes\n\n" %>% logr::put()
+# snp_sl %>% count( scheme ) %>% janitor::adorn_totals() %>% logr::put()
+# 
+# "\n\nDistribution of pairings and unique SNPs across chunks\n\n" %>% logr::put()
+# summary_snp_sl %>% janitor::adorn_totals() %>% logr::put()
+# 
+# 
+# # PROCESS CHUNK PATH DATA ----
+# 
+# # Combine all data.tables with paths to result files into one large data.table:
+# chunk_result_paths <- data.table::rbindlist( chunk_result_paths )
+# 
+# # Look at chunk_result_paths
+# 
+# # Display gt table in viewer console:
+# chunk_result_paths %>%
+#   gt::gt() %>%
+#   tab_options( table.font.size = "x-small" ) %>%
+#   opt_row_striping() %>%
+#   fmt_integer() %>%
+#   tab_header( title = md(
+#     "Paths to files containing results from the chunk executions -
+#     One file per chunk with all SNP x SL pairings with p-value estimates, and
+#     one file per chunk with all pairings **without** p-value estimates due to error/warnings"
+#   ) )
+# 
+# # Write chunk_result_paths to stage_dir:
+# chunk_result_paths %>%
+#   readr::write_excel_csv2(
+#     file.path( root_dir, stage_dir, "chunk_result_paths.csv")
+#   )
+# 
+# # Log path to written file:
+# paste0(
+#   "Data table containing paths to chunk-specific result files written to: "
+#   , file.path( root_dir, stage_dir, "chunk_result_paths.csv") ) %>%
+#   logr::put()
+# 
+# "\n\nchunk_result_paths:\n" %>% logr::put()
+# chunk_result_paths %>% logr::put()
+# 
+# # # Import again if restarting session is necessary:
+# # chunk_result_paths <- readr::read_csv2(
+# #     file.path( root_dir, stage_dir, "chunk_result_paths.csv")
+# #   )
+# # data.table::setDT(chunk_result_paths)
+```
+
+## Shut down cluster
+
+```{r}
+# Shut down the workers used by foreach:
+doParallel::stopImplicitCluster()
+
+# Clean up any remnants from previous clusters
+# (Code from answer from Steve Weston on Stack Overflow dated 4/8/2014 )
+foreach_env <- foreach:::.foreachGlobals
+rm( list = ls( name = foreach_env ), pos = foreach_env )
+
+# Close any open connections (this should not affect the ff data)
+base::closeAllConnections()
+base::showConnections()
+```
+
+
+# Feather file metadata
+
+```{r}
+# PAIRINGS WITHOUT ESTIMATES DUE TO ERRORS/WARNINGS -----
+metadata <- file.info(
+  chunk_result_paths$results_chunk_no_estimates_path
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+
+metadata <- metadata %>%
+  mutate( file = gsub(root_dir, "", file ) ) %>% 
+  janitor::adorn_totals() %>% 
+  mutate( file_size = 
+            R.utils::hsize.numeric(size, units = "auto", digits = 3) ) 
+
+metadata %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( title = md(
+    paste0( "Files with error and warning codes - Metadata - Chromosome "
+            , chr_number))
+  )
+
+# Add metadata table to chromosome log:
+logr::sep(
+  "Files with pairings without estimates due to errors/warnings - Metadata "
+)
+metadata %>% logr::put()
+
+
+# PAIRINGS WITH ESTIMATES -----
+metadata <- file.info(
+  chunk_result_paths$results_chunk_estimates_path
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+
+metadata <- metadata %>%
+  mutate( file = gsub(root_dir, "", file ) ) %>% 
+  janitor::adorn_totals() %>% 
+  mutate( file_size = 
+            R.utils::hsize.numeric(size, units = "auto", digits = 3) ) 
+
+metadata %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( title = md(
+    paste0( "Files with p-value estimates - Metadata - Chromosome "
+            , chr_number))
+  )
+
+# Add metadata table to chromosome log:
+logr::sep(
+  "Files with pairings *with* estimates due to errors/warnings - Metadata"
+)
+metadata %>% logr::put()
+logr::put("\n\n")
+```
+
+
+
+# Import and process results
+
+
+```{r}
+logr::sep("Importing and processing all chunk results" )
+
+process_results_time_start <- Sys.time()
+
+memuse::Sys.meminfo()
+
+# Vector with the unique chunk numbers:
+chunk_numbers <-
+  snp_sl %>% distinct( chunk ) %>% pull( chunk )
+
+# PAIRINGS WITH P-VALUE ESTIMATES -----
+
+# We will import these files:
+chunk_result_paths %>% 
+  mutate( files = gsub( root_dir, "", results_chunk_estimates_path) ) %>% 
+  select( files ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  tab_header( title = "Chunk-specific files that will be imported" )
+
+
+# IMPORT DATA
+
+# Import the feather file for each chunk and format as data.table:
+system.time({
+  all_results <- lapply( chunk_numbers, function(chunk){
+    # Stop if file does not exist:
+    stopifnot( file.exists(
+      as.character(
+        chunk_result_paths[ chunk, "results_chunk_estimates_path", drop = TRUE ]
+      )
+    ) )
+    # Import feather file with results:
+    res <- feather::read_feather(
+      as.character(
+        chunk_result_paths[ chunk, "results_chunk_estimates_path", drop = TRUE ]
+      )
+    )
+    # Make data frame into data.table:
+    data.table::setDT( res )
+    # Stop if class of res is not data.table:
+    stopifnot( "data.table" %in% class( res ) )
+    # Return data.table:
+    return( res )
+  }) 
+})
+
+# Check that the all_results list has one element per chunk:
+stopifnot( length( all_results ) == length( chunk_numbers ) )
+
+# COMBINE ALL THE SNP x SL RESULTS INTO ONE DATA FRAME (data.table):
+system.time({
+  all_results <- data.table::rbindlist( all_results )
+})
+
+memuse::Sys.meminfo()
+
+# Class, object size etc. before conversion:
+all_results
+class(all_results)
+format( object.size(all_results), "Mb") 
+paste0( "\nObject size of data.table containing p-values from all chunks: "
+        , format( object.size(all_results), "Mb" ) ) %>% 
+  logr::put()
+
+
+# CONVERT TO MATRIX
+
+# Convert to matrix using column containing snp id and sl id as rownames:
+all_results <- as.matrix( all_results, rownames = "snp_x_sl" )
+
+# Look at resulting matrix:
+dim(all_results)
+class(all_results)
+format( object.size(all_results), "Mb") 
+paste0( "\nObject size of matrix containing p-values from all chunks: "
+        , format( object.size(all_results), "Mb" ) ) %>% 
+  logr::put()
+
+all_results[ 1:5, , drop = FALSE ]
+all_results[ (nrow(all_results)-5):nrow(all_results), , drop = FALSE]
+
+# CONVERT TO FF_MATRIX
+
+system.time({
+  all_results_ff <- 
+    ff( all_results[ 1:nrow(all_results), 1:ncol(all_results) , drop = FALSE ]
+        , update = TRUE
+        , dim = dim( all_results )
+        , dimnames = list(
+          rownames(all_results)
+          , colnames(all_results)
+        )
+        , filename = file.path(
+          results_dir
+          , paste0( stage_dir
+                    , sprintf("_chr%02d", chr_number )
+                    , "_pval_estimates.ff" )
+        )
+        , overwrite = TRUE
+        , finalizer = "close" 
+        # (If the ff object is removed, it gets closed)
+    )
+})
+
+# dim(all_results_ff)
+
+# Check that ff file exists:
+stopifnot( file.exists( physical(all_results_ff)$filename ) )
+
+# Log path to ff file:
+paste0( "\nmatrix written to the following ff file: \n\n"
+        , physical(all_results_ff)$filename ) %>% 
+  logr::put()
+
+# Size of resulting ff_matrix object in R session:
+format( object.size(all_results_ff), "auto") 
+paste0( "\nObject size of ff_matrix containing p-values from all chunks: "
+        , format( object.size(all_results_ff), "auto") ) %>% 
+  logr::put()
+
+
+# Size of resulting ff file containing ff matrix:
+# file.size( physical(all_results_ff)$filename )
+# fs::file_size( physical(all_results_ff)$filename )
+paste0( "\nSize of ff file: "
+        , R.utils::hsize.numeric( file.size(
+          physical( all_results_ff )$filename )
+          , units = "auto", digits = 1 ) ) %>% 
+  logr::put()
+
+
+# CHECK IF MATRIX AND FF_MATRIX ARE IDENTICAL
+
+stopifnot(
+  "`ff_matrix` is not identical to the `matrix` object" =
+    identical( all_results, all_results_ff[])
+)
+
+
+
+# PAIRINGS WITHOUT P-VALUE ESTIMATES DUE TO ERRORS/WARNINGS -----
+
+# We will import these files:
+chunk_result_paths %>% 
+  mutate( files = gsub( root_dir, "", results_chunk_no_estimates_path) ) %>% 
+  select( files ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  tab_header( title = "Chunk-specific files that will be imported" )
+
+# IMPORT DATA
+
+# Import the feather file for each chunk and format as data.table:
+system.time({
+  all_results_wo_estimates <- lapply( chunk_numbers, function(chunk){
+    # Stop if file does not exist:
+    stopifnot( file.exists(
+      as.character( chunk_result_paths[ chunk, "results_chunk_no_estimates_path"
+                                        , drop = TRUE] )
+    ) )
+    # Import feather file with results:
+    res <- feather::read_feather(
+      as.character( chunk_result_paths[ chunk, "results_chunk_no_estimates_path"
+                                        , drop = TRUE] )
+    )
+    # Make data frame into data.table:
+    data.table::setDT( res )
+    # Stop if class of res is not data.table:
+    stopifnot( "data.table" %in% class( res ) )
+    # Return data.table:
+    return( res )
+  }) 
+})
+
+# Check that the all_results list has one element per chunk:
+stopifnot( length( all_results_wo_estimates ) == length( chunk_numbers ) )
+
+# COMBINE ALL THE SNP x SL RESULTS INTO ONE DATA FRAME (data.table):
+system.time({
+  all_results_wo_estimates <- data.table::rbindlist( all_results_wo_estimates )
+})
+
+memuse::Sys.meminfo()
+
+# Class, object size etc. before conversion:
+all_results_wo_estimates
+class(all_results_wo_estimates)
+format( object.size(all_results_wo_estimates), "Mb") 
+paste0( "\nObject size of data.table containing p-values from all chunks:\t"
+        , format( object.size(all_results_wo_estimates), "Mb" ) ) %>% 
+  logr::put()
+
+# CONVERT TO MATRIX
+
+# Convert to matrix using column containing snp id and sl id as rownames:
+all_results_wo_estimates <- as.matrix( all_results_wo_estimates
+                                       , rownames = "snp_x_sl" )
+
+# Look at resulting matrix:
+dim(all_results_wo_estimates)
+class(all_results_wo_estimates)
+format( object.size(all_results_wo_estimates), "Mb") 
+paste0( "\nObject size of matrix containing p-values from all chunks: "
+        , format( object.size(all_results_wo_estimates), "Mb" ) ) %>% 
+  logr::put()
+
+if( nrow(all_results_wo_estimates) >= 5 ){
+  all_results_wo_estimates[ 1:5, ]
+  all_results_wo_estimates[
+    (nrow(all_results_wo_estimates)-5):nrow(all_results_wo_estimates), ]
+} else{ all_results_wo_estimates }
+
+
+# CONVERT TO FF_MATRIX
+
+system.time({
+  all_results_wo_estimates_ff <- 
+    ff( all_results_wo_estimates
+        , update = TRUE
+        , dim = dim( all_results_wo_estimates )
+        , dimnames = list(
+          rownames(all_results_wo_estimates)
+          , colnames(all_results_wo_estimates)
+        )
+       , filename = file.path(
+          results_dir
+          , paste0( stage_dir
+                    , sprintf("_chr%02d", chr_number )
+                    , "_pairings_without_estimates.ff" )
+        )
+        , overwrite = TRUE
+        , finalizer = "close" 
+        # (If the ff object is removed, it gets closed)
+    )
+})
+
+# Check that ff file exists:
+stopifnot( file.exists( physical(all_results_wo_estimates_ff)$filename ) )
+
+# Log path to ff file:
+paste0( "\nmatrix written to the following ff file: \n\n"
+        , physical(all_results_wo_estimates_ff)$filename ) %>% 
+  logr::put()
+
+# Size of resulting ff_matrix object in R session:
+format( object.size(all_results_wo_estimates_ff), "auto") 
+paste0( "\nObject size of ff_matrix containing p-values from all chunks: "
+        , format( object.size(all_results_wo_estimates_ff), "auto") ) %>% 
+  logr::put()
+
+
+# Size of resulting ff file containing ff matrix:
+# file.size( physical(all_results_wo_estimates_ff)$filename )
+# fs::file_size( physical(all_results_wo_estimates_ff)$filename )
+paste0( "\nSize of ff file: "
+        , R.utils::hsize.numeric( file.size(
+          physical( all_results_wo_estimates_ff )$filename )
+          , units = "auto", digits = 1 ) ) %>% 
+  logr::put()
+
+
+
+# CHECK IF MATRIX AND FF_MATRIX ARE IDENTICAL
+
+stopifnot(
+  "`ff_matrix` is not identical to the `matrix` object" =
+    identical( all_results_wo_estimates, all_results_wo_estimates_ff[])
+)
+
+
+
+# FFSAVE -----
+
+ffarchive_path <- 
+  file.path( results_dir
+             , paste0( stage_dir, "_gw_gxe_",  sprintf("chr%02d", chr_number) )
+  )
+
+paste0("\nAdding both ff_matrices to an ffarchive at \n", ffarchive_path ) %>% 
+  logr::put()
+
+# Create an ffarchive with the results using ffsave
+ff::ffsave( 
+  all_results_ff
+  , all_results_wo_estimates_ff
+  # Name for the ffarchive
+  , file = ffarchive_path
+  # Whether the ff files should be moved instead of copied into the .ffData:
+  , move = TRUE 
+  # Specify 'rootpath' so that ffload() doesn't create an empty directory in
+  # root_dir:
+  , rootpath = results_dir
+  # This is where the ff file will be extracted to when using ffload(). If the
+  # ffarchive is moved to a different directory, one may have to use physical()
+  # to update the filename and pattern attribute before loading.
+)
+
+# Close the ff files if open:
+if( is.open(all_results_ff) ) close(all_results_ff)
+if( is.open(all_results_wo_estimates_ff) ) close(all_results_wo_estimates_ff)
+
+logr::put("\nff::ffinfo( ffarchive_path ):")
+ff::ffinfo( ffarchive_path ) %>% logr::put()
+
+# IMPORT + PROCESSING EXECUTION TIME -----
+
+process_results_execution_time <- Sys.time() - process_results_time_start
+
+logr::sep("Results processing exection time" )
+
+paste0(
+  "Execution time for processing results (resulting in an ffarchive): "
+  , round( as.numeric( process_results_execution_time, units = "mins" ), 3)
+  , " minutes\n\n"
+) %>% 
+  logr::put()
+```
+
+
+# Total execution time
+
+Total execution time of chunk-wise parallelised SNP-by-SNP analysis + execution time of importing, processing and saving results to `ffarchive`.
+
+```{r}
+logr::sep("TOTAL CHROMOSOME EXECUTION TIME")
+
+total_execution_time <- parallel_execution_time + process_results_execution_time
+
+paste0(
+  "TOTAL EXECUTION TIME: "
+  , round( as.numeric( total_execution_time, units = "hours" ), 3)
+  , " hours.\n\n"
+  , "(Includes starting clusters, parallel processing of all chunks, importing "
+  , "result files and then processing and writing results to ffarchive.)\n\n"
+) %>% 
+  # strwrap()
+  logr::put()
+
+# Close log:
+logr::log_close()
+```
+
+
+# Close ff file with strata data and delete
+
+The ffarchive remains intact in the 0501 stage directory, but we will delete the ff file from the 0701 stage directory.
+
+```{r}
+close(all_sl_strata_ff)
+rm(all_sl_strata_ff)
+if( file.exists(
+  file.path( root_dir, stage_dir, paste0( strata_fileset_name, ".ff") ) ) ){
+  unlink(  file.path( root_dir, stage_dir, paste0( strata_fileset_name, ".ff") )
+           , force = TRUE )
+}
+```
+
+
+# Delete process directories
+
+```{r}
+# Get names of all files and folders in stage directory
+files_in_stage_dir <- list.files( file.path( root_dir, stage_dir ) )
+
+# Get the names of process directory folder
+# (process ID is always an integer regardless of operating system)
+process_dirs <- files_in_stage_dir[grepl( "^\\d+$", files_in_stage_dir )]
+
+# Stop if important files/folder that we want to keep are in the process_dirs
+# vector
+stopifnot( 
+  !( any(grepl( "^log$|\\.feather|\\.csv", process_dirs) ) )
+)
+
+
+# Permanently delete process directories that were created during parallel
+# processing
+for( i in seq_along( process_dirs ) ){
+  unlink( file.path( root_dir, stage_dir, process_dirs[i])
+          , recursive = TRUE, force = TRUE )
+}
+```
+
+
+# Move log folder to Results
+
+```{r}
+file.copy( 
+  from = log_dir
+  # from = file.path( log_dir, log_filenames )
+  , to =  results_dir
+  # , to =  file.path( results_dir, "log", log_filenames )
+  , recursive = TRUE
+  , copy.date = TRUE
+  )
+
+```
+
+
+# Process performance log
+
+```{r}
+perf_log <- readr::read_csv2( perf_log_path )
+
+perf_log %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+perf_log <- perf_log %>%
+  tidyr::pivot_wider(names_from = var, values_from = val ) %>% 
+  select( -chr_number, -contains("cores"), -n_chunks, -chunk_size ) 
+
+perf_log <- perf_log %>%
+  mutate(
+    # The time it takes to get the cores up and running upon calling foreach:
+    chunk_core_startup_duration = 
+      difftime( iteration_1_start_time, foreach_call_time, units = "secs" )
+    # The time from the chunk's first foreach iteration starts to when all the
+    # chunk's foreach iterations are complete (does not include processing of
+    # results)
+    , chunk_foreach_duration_secs = difftime( chunk_parallel_complete_time,
+                                              iteration_1_start_time
+                                              , units = "secs" )
+    , chunk_foreach_duration_hours = difftime( chunk_parallel_complete_time
+                                               , iteration_1_start_time
+                                               , units = "hours" )
+  )
+
+perf_log %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+
+
+# CREATE BREAKDOWN OF EXECUTION TIME -----
+
+# Create empty data.frame:
+breakdown <- data.frame( interval = character()
+                         , descr = character()
+                         , duration_seconds = double()
+                         , duration_hours = double()
+                         )
+
+# Add row with amount of time between start of Rmd chunk to after creating PSOCK
+# cluster:
+breakdown <- breakdown %>% add_row( 
+  interval = "rmd_chunk_start_to_after_psock"
+  , descr = "From start of Rmarkdown chunk to after creating PSOCK cluster"
+  , duration_seconds = perf_log %>% 
+    filter( chunk == 0 ) %>% 
+    mutate( 
+      diff = difftime( makePSOCKcluster_end_time, parallel_start_time
+                       , units = "secs" )
+    ) %>% pull( diff ) %>% as.double()
+  , duration_hours = perf_log %>% 
+    filter( chunk == 0 ) %>% 
+    mutate( 
+      diff = difftime( makePSOCKcluster_end_time, parallel_start_time
+                       , units = "hours" )
+    ) %>% pull( diff ) %>% as.double()
+)
+
+# Add row with amount of time between calling foreach and when the first foreach
+# iteration started (how long it took to get all the cores up and running)
+breakdown <- breakdown %>% add_row( 
+  interval = "calling_foreach_to_first_iteration"
+  , descr =
+    "From calling foreach when initiating parallel processing of chunk to when the first foreach iteration started (i.e. the time it took to get all the cores up and running) - Sum of all chunk durations"
+  , duration_seconds = perf_log %>% 
+    filter( chunk != 0 ) %>% 
+    pull( chunk_core_startup_duration ) %>%
+    sum(. , na.rm = TRUE) %>% as.double()
+  , duration_hours = perf_log %>% 
+    filter( chunk != 0 ) %>% 
+    pull( chunk_core_startup_duration ) %>%
+    sum(. , na.rm = TRUE) %>% as.double(. , units = "hours")
+)
+
+# Add row with the amount of time, in total across all chunks, between the first
+# foreach iteration of chunk started and when the chunk's foreach loop was
+# complete (how long it took to parallel process the chunk once the cores were
+# up and running)
+breakdown <- breakdown %>% add_row( 
+  interval = "first_iteration_to_foreach_completion"
+  , descr =
+    "From when the first foreach iteration started to when the foreach loop was completed (i.e.(how long it took to parallel process the chunk once the cores were up and running) - Sum of all chunk durations"
+  , duration_seconds = perf_log %>% 
+    filter( chunk != 0 ) %>% 
+    pull( chunk_foreach_duration_secs ) %>%
+    sum(. , na.rm = TRUE) %>% as.double()
+  , duration_hours = perf_log %>% 
+    filter( chunk != 0 ) %>% 
+    pull( chunk_foreach_duration_secs ) %>%
+    sum(. , na.rm = TRUE) %>% as.double(. , units = "hours")
+)
+
+# Add row with the amount of time it took to process the result files after
+# completing the lapply loop with parallel processing
+breakdown <- breakdown %>% add_row( 
+  interval = "processing_results"
+  , descr =
+    "The time it took to import and combine the chunk result files, converting the data to ff_matrices and saving them to an ffarchive"
+  , duration_seconds = process_results_execution_time %>% as.double()
+  , duration_hours = process_results_execution_time %>%
+    as.double(. , units = "hours")
+)
+
+# Add total row:
+breakdown <- breakdown %>% janitor::adorn_totals()
+
+# Add row with total_execution_time variable:
+# (Time includes processing results returned by foreach dopar loop, making
+# chromosome log etc.)
+breakdown <- breakdown %>% add_row( 
+  interval = "total_execution_time"
+  , descr =
+    "`total_execution_time` (includes writing feather file(s), writing to chromosome log etc."
+  , duration_seconds = total_execution_time %>% as.double()
+  , duration_hours = total_execution_time %>%
+    as.double(. , units = "hours")
+)
+
+# Display summary (in long format)
+breakdown %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_number( columns = duration_seconds ) %>% 
+  tab_header( title = "Summary of execution time - Long format" )
+
+# Export table containing long format execution time summary/breakdown:
+breakdown %>% readr::write_excel_csv2( 
+  .
+  , file.path( perf_log_dir
+               , paste0( format( script_start_datetime, "%Y-%m-%d_%H%M%S" )
+                         , "_execution_time_summary_long_format.csv") )
+)
+
+
+# CONVERT BREAKDOWN TO A WIDE FORMAT WHICH IS MORE SUITABLE FOR COLLATING AND
+# SUBSEQUENT PLOTTING -----
+
+# Transform to wide and bind together with df containing information re. run:
+breakdown_wide <- cbind( 
+  data.frame( chr_number = chr_number
+              , chromosome_log_filename =
+                gsub(".*/", "", chromosome_log_filename)
+              , n_cores = n_cores
+              , n_available_cores = parallel::detectCores()
+              , computername = Sys.getenv("COMPUTERNAME")
+              , n_chunks = n_chunks
+              , chunk_size = chunk_size
+              , snps_per_chunk_median =
+                median( summary_snp_sl$`n_distinct(snp)` )
+              , pairings_per_chunk_median =
+                median( summary_snp_sl$`n_distinct(snp, sl_id)`)
+  ), breakdown %>%
+    select( -descr, -duration_seconds ) %>% 
+    tidyr::pivot_wider( names_from = interval, values_from = duration_hours)
+)
+
+# Add script_start_datetime and current time (end_time)
+# (i.e. the timestamp from the very first code chunk in this file, showing the
+# date and time this run started )
+breakdown_wide <- breakdown_wide %>% 
+  mutate( start_times = script_start_datetime, end_time = Sys.time() )
+
+# Add name of pipeline_dir
+# (useful if user wants to quickly check which pipeline_dir was used)
+breakdown_wide <- breakdown_wide %>% 
+  mutate( pipeline_dir = pipeline_dir )
+
+# Add amount of RAM that was free at the very start of the script and the median
+# and minimum of the free RAM recorded when collecting observations for the
+# chunk summary table
+# (can be useful for troubleshooting if the total execution time was longer than
+# expected)
+breakdown_wide <- breakdown_wide %>% 
+  mutate( freeram_start_of_script =  freeram_start_of_script )
+
+freeram_from_chunk_summary <- c(
+  as.numeric(
+    gsub( "[[:space:]].*$", ""
+          , chunk_summary_tab$freeram_start_of_chunk ) )
+  , as.numeric( 
+    gsub( "[[:space:]].*$", ""
+          , chunk_summary_tab$freeram_after_parallel_snp_processing) )
+)
+breakdown_wide <- breakdown_wide %>% 
+  mutate( median_freeram_from_chunk_summary =
+            median( freeram_from_chunk_summary )
+          , minimum_freeram_from_chunk_summary =
+            min( freeram_from_chunk_summary )
+  )
+
+
+
+
+
+# Display summary (in wide format)
+breakdown_wide %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer( columns = c(chunk_size, snps_per_chunk_median
+                           , pairings_per_chunk_median) ) %>%
+  tab_header( title = "Summary of execution time - Wide format" )
+
+# Export table containing wide format execution time summary/breakdown:
+breakdown_wide %>% readr::write_excel_csv2( 
+  .
+  , file.path( perf_log_dir
+               , paste0( format(script_start_datetime, "%Y-%m-%d_%H%M%S" )
+                         , "_execution_time_summary_wide_format.csv")
+  )
+)
+
+```
+
+
+# Get technical data such as OS, R version, CPU etc.
+
+```{r}
+technical_df <- data.frame(
+  stage = as.character(stage_dir)
+  , chr = chr_number
+  , total_execution_time_hours = breakdown_wide$total_execution_time
+  , start_time = breakdown_wide$start_times
+  , pipeline_dir = pipeline_dir
+  , working_directory = getwd()
+  , computername = Sys.getenv("COMPUTERNAME")
+  , os = Sys.getenv("OS")
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+  , PROCESSOR_ARCHITECTURE = Sys.getenv("PROCESSOR_ARCHITECTURE")
+  , PROCESSOR_IDENTIFIER = Sys.getenv("PROCESSOR_IDENTIFIER")
+  , PROCESSOR_LEVEL = Sys.getenv("PROCESSOR_LEVEL")
+  , PROCESSOR_REVISION = Sys.getenv("PROCESSOR_REVISION")
+)
+
+
+# Export data frame to perf_log_dir
+technical_df %>% readr::write_excel_csv2( 
+  . 
+  , file = , file.path( perf_log_dir
+               , paste0( format(script_start_datetime, "%Y-%m-%d_%H%M%S" )
+                         , "_technical_data.csv")
+  )
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+
+# *RUN ENTIRE SCRIPT FROM HERE BY CLICKING "Run All Chunks Above"
+
+```{r}
+
+```
+
+
+# Error and warning tables
+
+```{r}
+# Table with pairings without p-values:
+tab <- all_results_wo_estimates %>% 
+  as.data.frame.matrix() %>% 
+  count( gxe_execution_allowed, error_code, warning_code )
+
+# Display table:
+tab %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>% 
+  tab_header( title = "Error and warning codes among pairings *without* p-value estimates" )
+
+# Export table:
+tab %>%
+  readr::write_excel_csv2(
+    file = file.path( run_info_dir
+                      , "t08_error_and_warning_codes_pairings_wo_pvals.csv")
+  )
+
+# Table with pairings with p-values:
+tab <- all_results %>% 
+  as.data.frame.matrix() %>% 
+  count( gxe_execution_allowed, error_code, warning_code ) 
+
+# Display table:
+tab %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>% 
+  tab_header( title = "Error and warning codes among pairings *with* p-value estimates" )
+
+# Export table:
+tab %>%
+  readr::write_excel_csv2(
+    file = file.path( run_info_dir
+                      , "t09_error_and_warning_codes_pairings_with_pvals.csv")
+  )
+```
+
+
+# Preliminary plots of results
+
+```{r}
+# Make results matrix into data frame:
+res_all <- data.table::as.data.table( all_results, keep.rownames = "id" )
+
+# Add column with SNP ID:
+res_all <- res_all %>% mutate( snp = gsub("_SL\\d*$", "", id) )
+
+# Add SNP coordinate:
+res_all <- res_all %>% 
+  dplyr::left_join( . , map %>% select( snp, pos = b ), by = "snp" )
+
+
+# Make simple, rudimentary Manhattan plot:
+
+# PoOxMe - poo
+if( haplin_args$haplin_poo == TRUE & "poo" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <-  res_all %>%
+    filter( poo == 0 ) %>% 
+    nrow()
+  
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !(poo == 0 ) )
+  
+  tiff(
+    filename = file.path( run_info_dir, "fig_manhattan_plot_poo.tif")
+    , width = 1200
+    , height = 700
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = res$pos
+    , y = -log10( res$poo )
+    , main = paste0( "PoOxMe Chr "
+                     , chr_number
+                     , " -log10 transformed p-values" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where poo equals zero)" )
+    , xlab = "SNP coordinate"
+    , ylab = "-log10( poo )"
+    , ylim = c(0, ceiling( max( -log10(res$poo) ) ) )
+    , cex = 3
+  )
+  
+  abline( h = 5, lty = 2, col = "red")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  
+  dev.off()
+}
+
+# PoOxMe - poo.trend
+if( haplin_args$haplin_poo == TRUE & "poo.trend" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <-  res_all %>%
+    filter( poo.trend == 0 ) %>% 
+    nrow()
+  
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !(poo.trend == 0 ) )
+  
+  tiff(
+    filename = file.path( run_info_dir, "fig_manhattan_plot_poo_trend.tif")
+    , width = 1200
+    , height = 700
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = res$pos
+    , y = -log10( res$poo.trend )
+    , main = paste0( "PoOxMe Chr "
+                     , chr_number
+                     , " -log10 transformed p-values" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where poo.trend equals zero)" )
+    , xlab = "SNP coordinate"
+    , ylab = "-log10( poo.trend )"
+    , ylim = c(0, ceiling( max( -log10(res$poo.trend) ) ) )
+    , cex = 3
+  )
+  
+  abline( h = 5, lty = 2, col = "red")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  
+  dev.off()
+}
+
+# GxMe - child
+if( haplin_args$haplin_poo == FALSE & "child" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <-  res_all %>%
+    filter( child == 0 ) %>% 
+    nrow()
+  
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !(child == 0 ) )
+  
+  tiff(
+    filename = file.path( run_info_dir, "fig_manhattan_plot_child.tif")
+    , width = 1200
+    , height = 700
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = res$pos
+    , y = -log10( res$child )
+    , main = paste0( "GxMe Chr "
+                     , chr_number
+                     , " -log10 transformed p-values" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where child equals zero)" )
+    , xlab = "SNP coordinate"
+    , ylab = "-log10( child )"
+    , ylim = c(0, ceiling( max( -log10(res$child) ) ) )
+    , cex = 3
+  )
+  
+  abline( h = 5, lty = 2, col = "red")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  
+  dev.off()
+}
+
+# GxMe - child.trend
+if( haplin_args$haplin_poo == FALSE & "child.trend" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <-  res_all %>%
+    filter( child.trend == 0 ) %>% 
+    nrow()
+  
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !(child.trend == 0 ) )
+  
+  tiff(
+    filename = file.path( run_info_dir, "fig_manhattan_plot_child_trend.tif")
+    , width = 1200
+    , height = 700
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = res$pos
+    , y = -log10( res$child.trend )
+    , main = paste0( "PoOxMe Chr "
+                     , chr_number
+                     , " -log10 transformed p-values" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where child.trend equals zero)" )
+    , xlab = "SNP coordinate"
+    , ylab = "-log10( child.trend )"
+    , ylim = c(0, ceiling( max( -log10(res$child.trend) ) ) )
+    , cex = 3
+  )
+  
+  abline( h = 5, lty = 2, col = "red")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  
+  dev.off()
+}
+
+# Plots comparing p-values from Wald test with p-values from trend test
+
+# child vs child.trend
+if( haplin_args$haplin_poo == FALSE &
+    "child.trend" %in% gxe_pvals &
+    "child" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <- res_all %>%
+    filter( child == 0 | child.trend == 0 ) %>%
+    nrow()
+
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !( child == 0 | child.trend == 0 ) )
+  
+  combined_range <- range( c( -log10( res$child ), -log10( res$child.trend ) ) )
+
+  tiff(
+    filename = file.path( run_info_dir
+                          , "fig_manhattan_plot_child_vs_child_trend.tif" )
+    , width = 1200
+    , height = 700
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = -log10( res$child )
+    , y = -log10( res$child.trend )
+    , main = paste0( "GxMe Chr "
+                     , chr_number
+                     , " child vs child.trend" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where child or child.trend equals zero)" )
+    , xlab = "-log10( child )"
+    , ylab = "-log10( child.trend )"
+    , ylim = combined_range
+    , xlim = combined_range
+    , cex = 3
+    , asp = 1
+  )
+
+  abline( h = 5, lty = 2, col = "red")
+  abline( v = 5, lty = 2, col = "red")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  abline( v = -log10(5e-08), lty = 2, col = "red")
+
+  dev.off()
+}
+
+# poo vs poo.trend
+if( haplin_args$haplin_poo == TRUE &
+    "poo.trend" %in% gxe_pvals &
+    "poo" %in% gxe_pvals ){
+  
+  n_pairings_w_pval_equal_to_zero <- res_all %>%
+    filter( poo == 0 | poo.trend == 0 ) %>%
+    nrow()
+
+  # Remove any pairings where a p-value equals zero:
+  res <- res_all %>% filter( !( poo == 0 | poo.trend == 0 ) )
+  
+  combined_range <- range( c( -log10( res$poo ), -log10( res$poo.trend ) ) )
+
+  tiff(
+    filename = file.path( run_info_dir
+                          , "fig_manhattan_plot_poo_vs_poo_trend.tif" )
+    , width = 1100
+    , height = 1100
+    , compression = "none"
+    , pointsize = 20
+  )
+  scattermore::scattermoreplot(
+    x = -log10( res$poo )
+    , y = -log10( res$poo.trend )
+    , main = paste0( "PoOxMe Chr "
+                     , chr_number
+                     , " child vs child.trend" )
+    , sub = paste0( "(All the p-values from the chromosome, except "
+                    , n_pairings_w_pval_equal_to_zero
+                    , " pairing(s) where poo or poo.trend equals zero)" )
+    , xlab = "-log10( poo )"
+    , ylab = "-log10( poo.trend )"
+    , ylim = combined_range
+    , xlim = combined_range
+    , cex = 3
+    , asp = 1
+  )
+
+  abline( h = 5, lty = 2, col = "orange")
+  abline( v = 5, lty = 2, col = "orange")
+  abline( h = -log10(5e-08), lty = 2, col = "red")
+  abline( v = -log10(5e-08), lty = 2, col = "red")
+
+  dev.off()
+}
+```
+
+
+# WRAP-UP
+
+## Remove large data objects
+
+```{r}
+#qqq Should this happen earlier in the script? Benefits of freeing memory vs. user's need to inspect objects if something goes wrong...
+# RESULT OBJECTS
+rm(all_results, all_results_ff
+   , all_results_wo_estimates, all_results_wo_estimates_ff
+)
+
+# 
+```
+
+

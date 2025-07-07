@@ -1,0 +1,2603 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # CHROMOSOME
+  # chr_number: 4
+  chr_number: 19
+  
+  # ROOT DIRECTORY
+  # (root_dir = the chromosome subdirectory)
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  root_dir: "C:/Temp/edj079/2024-05-29_pipeline_dir/chromosomes/Chr19"
+  
+  # EWAS FILE
+  
+  ewas_fileset_name: "ewas" # default
+  # ewas_fileset_name: "0007_new_betas" # USE ONLY WHEN DEVELOPING LOCALLY
+  # ewas_fileset_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA EWAS"
+  # ewas_fileset_name: "new_betas"
+  ewas_family_member: "c"
+  # ewas_map_file_name: sprintf("ewas_map_hm450k_hg19_chr%02d.feather", params$chr_number)
+  ewas_map_file_name: "ewas_map_hm450k_hg19_chr19.feather"
+  
+  # EWAS ANNOTATION FILE
+  ewas_annotation_file: "hg19_genome_100_segments.bed.gz"
+  
+  # GWAS FILE
+  
+  gwas_fileset_name: "gwas"
+  # gwas_fileset_name: "0006_Chr19" # USE ONLY WHEN DEVELOPING LOCALLY
+  
+  # PLINK-RELATED
+  
+  # When specified, plink_memory_mb is passed onto the "--memory" flag in the 
+  # pipeline's PLINK commands. Can be used to ensure that PLINK has enough RAM
+  # for its main workspace.
+  
+  # PLINK memory (OPTIONAL):
+  # plink_memory_mb: !r NA # default
+  # plink_memory_mb: !r c(300, 6000)
+  # plink_memory_mb: 98
+  plink_memory_mb: 1000
+  
+  # PLINK timeout 
+  # (maximum number of seconds a call to plink.exe can take before it's stopped)
+  plink_timeout: 300
+  
+  # STRATIFICATION SCHEME DEFINITIONS
+  
+  # Valid scheme definitions:
+  scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "99_TSS2", "Z_znf1" = "84_znf1", "Z_znf2" = "85_znf2" )
+  # Scheme definitions with duplicate state:
+  # scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "98_TSS1", "Z_znf1" = "84_znf1", "Z_znf2" = "85_znf2" )
+  
+  # Scheme definitions with non-valid scheme name + state name
+  # scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "99_TSS2", "Z_znf1" = "84_znf1", "Z_znf2" = "85_znf2", "nøff" = "møøø" )
+  
+  # Scheme definitions with duplicates of one or more full-stack states:
+  # scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "98_TSS1", "Z_znf1" = "84_znf1", "Z_znf2" = "84_znf1" )
+  
+  # Scheme definitions too long/too short names:
+  # scheme_states: !r c( "A1_TSS1222222222" = "98_TSS1", "1" = "98_TSS1", "Z_znf1" = "84_znf1", "Z_znf2" = "84_znf1" )
+  
+  
+  # CUT-OFF RELATED
+  
+  cut_off: 1000000
+  # Cut-offs containing strings with letters or decimal numbers:
+  # cut_off: !r c( "A1_TSS1" = 1000000.7, "A2_TSS2" = "1000000.0a", "Z_znf1" = 1000000, "Z_znf2" = 1000000 )
+  # Cut-offs containing elements that are strings that are whole numbers:
+  # cut_off: !r c( "A1_TSS1" = "77000", "A2_TSS2" = "1000000.0", "Z_znf1" = 1000000, "Z_znf2" = 1000000 )
+  # Scheme-specific cut-offs that are all the same number:
+  # cut_off: !r c( "A1_TSS1" = 1000000, "A2_TSS2" = "1000000", "Z_znf1" = 1000000, "Z_znf2" = 1000000 )
+  # # Valid scheme-specific cut-offs:
+  # cut_off: !r c( "A1_TSS1" = 5000000, "A2_TSS2" = 1000000, "Z_znf1" = 1000000, "Z_znf2" = 2000000 )
+  # Cut-off where two schemes are "missing"
+  # cut_off: !r c( "A1_TSS1" = 5000, "Z_znf1" = 1000000 )
+  
+  
+  # MQTL-RELATED
+  
+  # MQTL LD
+  mqtl_ld_r2: 0.9
+  # mqtl_ld_tag_kb: "" # User-provided put on hold (Dep. on snp list and cut off)
+  
+  # MQTL FILE
+  mqtl_file_name: "_0009_godmc_mqtl_associations_hg19_chr19.feather"
+  
+  # PRUNING RELATED
+  
+  # (implementing pruning has been put on hold)
+  
+  # PRUNE LD: 
+  # prune_ld_r2: 0.98
+  # prune_ld_tag_kb: "" # User-provided put on hold 
+  # (Dep. on snp list and cut off)
+  
+  
+  # ------ SUMMARISING FUNCTION ------ 
+  
+  # The function used to take an m x n matrix with EWAS probe data (n = # of 
+  # probes in SL, m = number of EWAS family member) to a 1 x m matrix with 
+  # summarised SL EWAS data
+  
+  # Default function (mean)
+  
+  sl_summarising_function: "default"
+  # Other quality tested functions:
+  # sl_summarising_function: "0501_summarising_function_max.R" # maximum
+  # sl_summarising_function: "0501_summarising_function_median.R" # median
+
+  # STRATIFYING FUNCTION
+  sl_stratifying_function: "default"
+  
+  # ------ STAGE DIRECTORY ------
+  stage_dir: "0101" # Default
+title: "`r paste0('0101 Check whether user-provided files and arguments meet pipeline requirements - Chromosome ', params$chr_number) `"
+---
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# EWAS
+ewas_fileset_name <- params$ewas_fileset_name
+ewas_family_member <- params$ewas_family_member
+
+# EWAS map file
+ewas_map_file_name <-  params$ewas_map_file_name
+# ewas_map_file_name <-  eval(parse( text = params$ewas_map_file_name ) )
+
+# EWAS ANNOTATION FILE
+ewas_annotation_file <- params$ewas_annotation_file
+
+# GWAS
+gwas_fileset_name <- params$gwas_fileset_name
+
+# PLINK
+plink_memory_mb <- params$plink_memory_mb
+
+
+# Stratification scheme
+scheme_states <- params$scheme_states
+cut_off <- params$cut_off
+
+
+# MQTL PARAMETERS:
+mqtl_ld_r2 <- params$mqtl_ld_r2 
+# mqtl_ld_tag_kb <- params$mqtl_ld_tag_kb 
+# User-provided mqtl_ld_tag_kb put on hold (Dep. on snp list and cut off)
+mqtl_file_name <- params$mqtl_file_name 
+
+
+# PRUNE LD:
+# prune_ld_r2 <- params$prune_ld_r2
+# prune_ld_tag_kb <-  params$prune_ld_tag_kb 
+# User-provided prune_ld_tag_kb put on hold (Dep. on snp list and cut off)
+
+# DETERMINE PIPELINE DIRECTORY
+
+# The pipeline directory is two levels up from the chromosome subdir being used
+# as the root directory by the Rmd script,
+# pipeline_dir/chromosomes/Chr01 -> up two levels -> pipeline_dir/
+pipeline_dir <- dirname( dirname( root_dir ) )
+
+# (The pipeline directory will be used later to determine the correct path to
+# internal functions such as f_is_whole_number.R.)
+
+
+# THE SL SUMMARISING FUNCTION
+sl_summarising_function <- params$sl_summarising_function
+
+# DETERMINE PATH TO SUMMARISING FUNCTION
+
+#xxxxx Specific to development phase: Create path to "user-specified" function
+# (the functions folder in root_dir that contains test functions as well as
+# proper working functions)
+if( sl_summarising_function != "default" ){
+  # Update sl_summarising_function to include full path:
+   sl_summarising_function <- file.path( pipeline_dir
+                                         , "R"
+                                         , sl_summarising_function )
+}
+# This is tailored to the fact that it's easier to supply the pipeline with file
+# names as opposed to the entire path when parallelising by chromosome
+
+# If user specified sl_summarising_function = "default", then replace "default"
+# with the path to the default function:
+if( sl_summarising_function == "default" ){
+  sl_summarising_function <- file.path( pipeline_dir
+                                        , "R"
+                                        , "0501_summarising_function_default.R" )
+}
+
+
+# STAGE DIRECTORY
+stage_dir <- params$stage_dir
+```
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  # lapply( files_in_stage_dir, file.remove )
+  # Use unlink with force = TRUE to delete any leftover content in stage_dir:
+  #xxxx implement this in all stage Rmds. file.remove does not have a "force"
+  # option, so unlink is safer.
+  lapply( files_in_stage_dir, function(i) unlink(i, recursive = T, force = T ) )
+}
+```
+
+
+# Create Rmd log file
+
+If there are any technical issued with the parallel rendering of the Rmd files belonging to the pre-processing phase of the pipeline (stage 0101 to 0502), they will often surface when executing the parallel rendering of stage 0101. Therefore, we will create a simple tsv file with information that can be useful when troubleshooting if any errors occur.
+
+```{r}
+rmd_log_file_path <- file.path( root_dir, stage_dir
+                                , paste0( stage_dir, "_rmd_log_file.csv")
+)
+write_this <- c( paste0( "*** Rmd log file created ", Sys.time() ), "\n" )
+readr::write_lines( write_this , file = rmd_log_file_path, append = TRUE )
+```
+
+
+```{r}
+readr::write_lines("Line number = 285", file = rmd_log_file_path, append = TRUE)
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+  
+- `r file.path( root_dir, params$gwas_fileset_name, ".bed/bim/fam")` - The QC'ed PLINK fileset from 0006.   
+
+- `r file.path( root_dir, paste0( ewas_fileset_name, "_env.ffData/RData") )` - The EWAS fileset. 
+  
+
+
+## Files produced by this script
+
+- `` - 
+
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , warning = FALSE # hide warnings
+  # , message = TRUE # hide messages
+  )
+options(scipen = 20)
+```
+
+
+## Packages and internal functions
+
+```{r}
+# Log the process ID
+write_this <- c( "\n*** Sys.getpid():"
+                 , Sys.getpid()
+                 , "\n" )
+readr::write_lines( write_this, file = rmd_log_file_path, append = TRUE )
+
+
+# Log the paths to Rprofile files:
+candidates <- c( Sys.getenv("R_PROFILE")
+                 , file.path( Sys.getenv("R_HOME"), "etc", "Rprofile.site")
+                 , Sys.getenv("R_PROFILE_USER")
+                 , file.path(getwd(), ".Rprofile")
+                 , file.path(Sys.getenv("HOME"), ".Rprofile") )
+
+write_this <- c( "*** Rprofile paths:"
+                 , fs::path_real( ( Filter( file.exists, candidates ) ) )
+                 , "\n" )
+readr::write_lines( write_this, file = rmd_log_file_path, append = TRUE )
+rm(candidates)
+
+# Log the priority order of libraries:
+write_this <- c( "*** .libPaths() :"
+                 , paste0( 1:length(.libPaths()), ": ", libPaths = .libPaths() )
+                 , "\n" )
+readr::write_lines( write_this, file = rmd_log_file_path, append = TRUE )
+
+
+
+library(dplyr)
+library(magrittr)
+library(ff)
+library(HaplinMethyl)
+library(gt)
+library(logr)
+
+# Source function from pipeline_dir/R:
+source( file.path( pipeline_dir, "R", "f_is_whole_number.R" ) )
+```
+
+
+# Create log file for any important messages related to warnings etc. that the user should inspect prior to
+
+Create a log file for any warnings, errors or other important messages. The user should inspect this log file before they go on to performing time-consuming, genome-wide analyses.
+
+```{r}
+if( dir.exists( file.path( pipeline_dir, "Reports", stage_dir ) ) ){
+  
+  # Initialise log file in "Reports/0101":
+  log_filename <- file.path(
+    # Directory:
+    pipeline_dir
+    , "Reports"
+    , stage_dir
+    # File name:
+    , paste0(
+      stage_dir
+      , "_check_files_and_extract_study_population_"
+      , sprintf( "chr%02d", params$chr_number)
+      , "_warnings_and_important_messages"
+    )
+  )
+  # Open log:
+  log_path <- logr::log_open(
+    file_name = log_filename
+    # Place the log file in a directory named "log" inside the working directory:
+    , logdir = FALSE
+    # Show traceback if error occurs:
+    , traceback = TRUE
+    # Disable automatic printing of notes (notes show Log Print Time and Elapsed
+    # Time for every entry in the log -> clutter)
+    , show_notes = FALSE
+  )
+} else{
+  stop(  file.path( pipeline_dir, "Reports", stage_dir )
+         , " does not exist!" )
+}
+```
+
+
+# Check chromosome number
+
+Is the supplied chromosome number an integer?  
+We do not accept letters such at "MT" and "Y".  
+X chromosome would have to be named the number 23 instead of "X".
+
+```{r}
+# Must contain only one element:
+stopifnot(
+  "'chr_number' must contain only one element" =
+    length( chr_number ) == 1
+)
+# Must be a numeric:
+stopifnot(
+  "'chr_number' must contain a numeric/integer" =
+    is.numeric( chr_number ) == TRUE
+)
+# Must be a whole number:
+stopifnot(
+  "'chr_number' must be a whole number" =
+    is_whole_number( chr_number ) == TRUE
+)
+# Must contain whole number in [1,22]:
+stopifnot(
+  "This package currently only supports analysis of autosomal data. The chromosome number must be a whole number greater than or equal to 1 and less than or equal to 22." =
+    chr_number %in% 1:22
+)
+```
+
+
+
+# Check `plink_memory_mb`
+
+```{r}
+if( all(!is.na(plink_memory_mb)) ){
+  stopifnot(
+    "'plink_memory_mb' must contain only one integer" =
+      length( plink_memory_mb ) == 1
+  )
+
+  stopifnot(
+    "'plink_memory_mb' has to contain a whole number larger than or equal to 100" =
+      is_whole_number(plink_memory_mb) & plink_memory_mb >= 100
+  )
+}
+```
+
+
+# Check EWAS annotation file
+
+```{r}
+# File must exist in working directory, i.e. chromosome subdir:
+stopifnot( file.exists( ewas_annotation_file ) )
+
+# Import file:
+annot <- data.table::fread(
+  ewas_annotation_file
+  , data.table = TRUE # fread returns a data.table
+)
+
+# Display dimensions of annotation file:
+dim(annot)
+
+# Display first few rows of annotation file:
+annot %>% 
+  head() %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+
+# Number of columns must be 4
+stopifnot( ncol(annot) == 4 )
+
+# Assign column names according to the required order of column:
+colnames(annot) <- c( "chrom", "chromStart", "chromEnd", "state")
+
+# The column classes must be character, integer, integer, character respectively
+stopifnot(
+  all(
+    sapply(annot, class) == c("character", "integer", "integer", "character")
+  )
+)
+
+# Throw error if the annotation file contains any missing values:
+if( any( is.na( unique(annot$chrom) ) ) ){
+  stop( "The `chrom` column in the annotation file contains one or more NAs!"
+        ,"\nThis file must not contain any missing values.")
+}
+if( any( is.na( unique(annot$chromStart) ) ) ){
+  stop( "The `chromStart` column in the annotation file contains one or more NAs!"
+        ,"\nThis file must not contain any missing values.")
+}
+if( any( is.na( unique(annot$chromEnd) ) ) ){
+  stop( "The `chromEnd` column in the annotation file contains one or more NAs!"
+        ,"\nThis file must not contain any missing values.")
+}
+if( any( is.na( unique(annot$state) ) ) ){
+  stop( "The `state` column in the annotation file contains one or more NAs!"
+        ,"\nThis file must not contain any missing values.")
+}
+
+# The first column must consist of strings starting with "chr":
+stopifnot( all( sapply(unique(annot$chrom), function(i) grepl("^chr", i) ) ) )
+# The first column must contain at least one string with "chr%" where % =
+# chr_number:
+stopifnot(
+  any( sapply(
+    unique(annot$chrom), function(i) grepl( paste0( "^chr", chr_number), i)
+  ) )
+)
+
+# The start coordinate cannot be larger than the end coordinate, and the end
+# coordinate cannot be smaller than the start coordinate:
+# (We allow for them to be identical in case some users want to annotate
+# single-nucleotide loci)
+stopifnot( 
+  annot[, 2:3 ] %>%
+    mutate( start_greater_than_end = chromStart > chromEnd ) %>% 
+    distinct( start_greater_than_end ) %>%
+    pull() == FALSE
+)
+  
+# The start/end coordinates must be whole numbers (non-negative integers)
+# (NB. "data.table"-specific syntax)
+stopifnot(
+  "The start coordinates in the annotation file must be non-negative integers" =
+    nrow( annot[ !is_whole_number(chromStart) , ] ) == 0
+)
+stopifnot(
+  "The start coordinates in the annotation file must be non-negative integers" =
+    nrow( annot[ !is_whole_number(chromEnd) , ] ) == 0
+)
+
+
+# Issue warning if the state column only contains 1 or 2 unique states:
+if( nrow( unique( annot[, "state"] ) ) <= 2 ){
+  warning( "There are only "
+           , nrow( unique( annot[, "state"] ) )
+           , " unique states in "
+           , ewas_annotation_file
+  )
+}
+
+# List the unique states from the annotation file:
+unique( annot[, "state"] ) %>% 
+  arrange( state ) %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+
+# Print number of unique states in annotation file:
+message( "There are "
+         , nrow( unique( annot[, "state"] ) )
+         , " unique states in "
+         , ewas_annotation_file
+         )
+
+# Create a vector with the unique states for later tests of the scheme states:
+annot_states <- unique( annot[, "state"] )$state
+
+# Remove the annotation file:
+rm(annot)
+```
+
+
+# Check the cut-off 
+
+```{r}
+# If cut_off is a named vector, then its names must match the names in
+# scheme_states and vice versa
+if( length(cut_off) > 1 ){
+  if(  !( all(sort(names(cut_off)) == sort(names( scheme_states ))) ) ){
+    stop( "The scheme names given in 'scheme_states' must match the "
+          , "scheme names in 'cut_off'!\n"
+          , "The names \""
+          , paste( unique( c( 
+            base::setdiff(names(cut_off), names(scheme_states))
+            , base::setdiff(names(scheme_states), names(cut_off))
+          )), collapse = ", "
+          )
+          , "\" do not exist in both 'scheme_names' and 'cut_off'."
+          )
+  } 
+}
+
+
+# Are the numbers in cut_off whole numbers?
+# (Function that returns TRUE if cut-off is a whole number or a string
+# containing a whole number, FALSE otherwise)
+int_test <- sapply( cut_off, is_whole_number )
+# params$cut_off
+# int_test
+
+
+# If all the cut-offs are either whole numbers or strings containing whole
+# numbers, then make sure that they are converted to integer before continuing
+# with the rest of the script:
+if( all(int_test) ){
+  cut_off_names <- names( cut_off ) # save the scheme names
+  cut_off <- as.integer(cut_off) # scheme names get deleted 
+  names( cut_off ) <- cut_off_names # preserve the names
+} else {
+  # If not, create error message:
+  
+  # User provided one (universal) cut-off:
+  if( length(int_test) == 1 ){
+    stop( paste0( "Oh no! The provided cut-off is not a whole number:"
+                  , params$cut_off
+                  , "\n"
+                  , "Please revise your specified cut-off.\n"
+    ))  
+  } else {
+    stop( paste0( "Oh no! Some of the provided cut-offs are not whole numbers,"
+                  , " namely these: \n"
+                  , paste0( names(which( int_test == FALSE ))
+                            , " = "
+                            , params$cut_off[which( int_test == FALSE )]
+                            , collapse = "\n")
+                  , "\n"
+                  , "Please revise your specified cut-off(s).\n"
+    ))
+  }
+}
+
+# If user has specified scheme-specific cut-offs, but they are all identical,
+# give a warning:
+if( length( params$cut_off ) > 1 & length( unique( params$cut_off) ) == 1 ){
+  warning( "You have supplied scheme-specific cut-offs, but they are all "
+           , "the same number. Consider supplying just one integer if this was "
+           , "intentional :)\n"
+           )
+}
+```
+
+
+
+# Check the scheme names/states
+
+```{r}
+# Unique scheme names
+# Number of scheme names must equal the number of unique scheme names:
+if( length(names(scheme_states) ) != 
+    length(unique(names(scheme_states))) ){
+  stop( paste0(
+    "Scheme names must be unique.\n"
+    , "These scheme names have duplicates: "
+    , paste0( names(params$scheme_states)[ 
+      which( duplicated( names(params$scheme_states)) ) ]
+      , collapse = ", ")
+    , "\n"
+    , "Please revise your specified scheme definitions in 'scheme_states'.\n"
+  ) )
+}
+
+# Names cannot contain white space or special symbols
+stopifnot(
+  "The scheme names in 'scheme_states' can only contain alphanumeric characters and  underscores. Please revise your scheme names." =
+    all( grepl( "\\w", names(scheme_states)) )
+  # "\\w" = a-z|A-Z|0-9|_
+)
+
+# Number of characters in the names must be greater than 0 and less than 11:
+stopifnot(
+  "Each scheme name in 'scheme_states' must consist of at least one character and no more than 10 characters." =
+    all( sapply(names(scheme_states), function(x) nchar(x) %in% 1:10 ) == TRUE )
+)
+
+
+# Let's allow scheme_states to contain duplicate states if they have different
+# cut-offs
+
+# # Unique scheme state names
+# # Duplicate full-stack states are not permitted
+# if( length(scheme_states) != length(unique(scheme_states)) ){
+#   stop( paste0(
+#     "The state names in `scheme_states` must be unique.\n"
+#     , "The following state names have duplicates:\n    "
+#     , paste0( params$scheme_states[ 
+#       which( duplicated( params$scheme_states) ) ]
+#       , collapse = ",\n    ")
+#     , "\n"
+#     , "Please revise your specified scheme definitions in 'scheme_states'.\n"
+#   ) )
+# }
+
+
+
+
+# If there are any duplicated states:
+if( length(scheme_states) != length(unique(scheme_states)) ){
+  
+  # And if the provided cut_off argument is not one universal cut-off: 
+  if( length(cut_off) != 1 ){
+    
+    # Create vector with all the states that have 1+ duplicates:
+    repeated_state_unique <-
+      unique( scheme_states[ duplicated(scheme_states) ] )
+    
+    # For each state with 1+ duplicates:
+    for( i in 1:length(repeated_state_unique) ){
+      # Get the names of all the schemes that have the same state:
+      scheme_names_rep_i <- names(
+        scheme_states[ which( scheme_states == repeated_state_unique[i]) ]
+      )
+      # Get the cut-offs of those schemes:
+      scheme_names_rep_cut_offs_i <- cut_off[scheme_names_rep_i]
+      
+      # Throw error if some of the "same-state" schemes have identical cut-offs:
+      if( length( scheme_names_rep_i ) != length( scheme_names_rep_cut_offs_i ) ){
+        stop( "You have defined multiple schemes where state = "
+              , repeated_state_unique[i]
+              , " using the exact same cut-off. \n"
+              , "Please remove the superfluous stratification scheme(s)."
+        )
+      }
+    }
+  } else{
+    # And if the provided cut_off argument *is* a universal cut-off: 
+    stop( paste0(
+      " When supplying a one-value, universal cut-off,"
+      , " the state names in `scheme_states` must be unique.\n"
+      , "The following state names have duplicates:\n    "
+      , paste0( params$scheme_states[
+        which( duplicated( params$scheme_states) ) ]
+        , collapse = ",\n    ")
+      , "\n"
+      , "Please revise your specified scheme definitions in 'scheme_states'"
+      , " and/or 'cut_off'.\n"
+    ) )
+  }
+}
+
+
+# Scheme state(s) must be identical to the full-stack state(s) in the annotation
+# file
+
+#qqq Should we allow users to supply their own annotation files with other "state names" and loci?
+#xxxxx Consider changing this to a warning message instead of stop message?
+#xxxxx Consider getting the state names from somewhere else in case we want to allow user to combine existing full-stack states into a new aggregate state by editing the annotation file from Vu & Ernst. Skipping a test entirely is risky as a small typo can cause the whole pipeline to break. Perhaps reading the entire annotation file, and using unique(state) is necessary.
+
+# (Remember that we still have 'annot_states' from chunk testing the the
+# annotation file.)
+
+# Throw error if there are scheme states that do not match any of the names of
+# the states from the EWAS annotation file
+if( all( scheme_states %in% annot_states ) == FALSE ){
+  stop( 
+    "The following scheme states do not match any of the states from the "
+    , "provided EWAS annotation file:  
+    "
+    , paste(scheme_states[ which( !(scheme_states %in% annot_states) )]
+           , collapse = ", ") 
+    , "\nPlease review the 'state' column in "
+    , ewas_annotation_file
+    , " and ensure that your scheme states are typed correctly." 
+  )
+}
+
+message( "All of the states in 'scheme_states' have a match in "
+         , ewas_annotation_file
+         , "\n"
+)
+```
+
+
+# Check haplin arguments
+
+
+```{r}
+#xxxx TODO: Source the arguments from the 0000_arguments.R file and add logical checks here as you think of them. Add the tests to 0701 as well in case users want to tweak them post executing the pre-processing stages (or consider creating a "check Haplin arguments" function?)
+# E.g.: haplin_poo must be either TRUE or FALSE 
+
+# SOURCE HAPLIN ARGUMENTS
+
+# Source the source_arguments function from R/f_log_arguments.R
+if( file.exists( file.path( pipeline_dir, "R", "f_source_arguments.R" ) ) ){
+  source( file.path( pipeline_dir, "R", "f_source_arguments.R" ) )
+} else{ stop(  here( "R", "f_source_arguments.R"), " does not exist!" )}
+
+# Source the arguments given in 0000_arguments.R
+args <- source_arguments(
+  file_path = file.path( pipeline_dir, "R", "0000_arguments.R" )
+)
+
+# Remove the arguments that are not haplin arguments:
+haplin_args <- args[ grepl( "^haplin_", names(args) ) ]
+
+
+# CCVAR
+
+# Haplin requires that: 
+# "Parameter "ccvar" should only be specified when using design "cc.triad" or
+# "cc" "
+if( !is.null(haplin_args$haplin_ccvar) & 
+    !(haplin_args$haplin_design %in% c("cc.triad", "cc")) ){
+  stop( "Haplin requires that 'Parameter `ccvar` should only be specified when "
+        , "using design \"cc.triad\" or \"cc\"'"
+  )
+}
+
+# PoO
+stopifnot( haplin_args$haplin_poo %in% c(FALSE, TRUE) )
+
+
+# RESPONSE AND REFERENCE
+# N.B. If response = "mult", but reference is not "ref.cat", then
+# reference is changed to "ref.cat" by haplin and a warning is given.
+
+if( haplin_args$haplin_response == "mult" &
+    !( haplin_args$haplin_reference == "ref.cat" ) ){
+  stop( "\nhaplin_response = \"", haplin_args$haplin_response, "\" and\n" 
+        , "haplin_reference = \"", haplin_args$haplin_reference, "\".\n" 
+        , "The Haplin package documentation states that if response = \"mult\""
+        , "but reference is not \"ref.cat\", then reference is changed to "
+        , "\"ref.cat\" by haplin and a warning is given.\n"
+        , "Please correct your specified arguments before running the script"
+        , " again from the beginning."
+        )
+}
+
+```
+
+
+
+# Check mQTL arguments
+
+```{r}
+
+# mqtl_ld_r2
+stopifnot( "'mqtl_ld_r2' must be a numeric" = is.numeric(mqtl_ld_r2) )
+stopifnot( "'mqtl_ld_r2' is too small!" = mqtl_ld_r2 >= 0.6 )
+stopifnot( "'mqtl_ld_r2' must be less than or equal to 1.0!" = mqtl_ld_r2 <= 1 )
+
+
+# DETERMINE PATH TO THE MQTL FILE
+mqtl_file_path <- file.path( root_dir, mqtl_file_name )
+
+
+# MQTL FILE REQUIRMENTS
+
+# Must be file that exist:
+if( file.exists(mqtl_file_path) == FALSE ){
+      stop( "Problem with `mqtl_file_name`. Based on the provided argument "
+            , "`mqtl_file_name_base_regex`, there should be a file named \""
+            , mqtl_file_name
+            , "\" with the following path: "
+            , mqtl_file_path
+            , ", but that file does not exist." ) }
+
+
+# Must be feather file
+stopifnot( "The mQTL files provided in `mqtl_file_dir` must be feather files" =
+             grepl("\\.feather$", mqtl_file_path) )
+
+# Column names:
+metadata <- feather::feather_metadata( mqtl_file_path )
+stopifnot( 
+  "The mQTL file provided by the user must contain columns named 
+  \"snp_chr\", \"snp_coord\", \"snp\", and \"cpg\". 
+    Please review the file requirements." =
+    all( c( "snp_chr", "snp_coord", "snp", "cpg" ) %in% names( metadata$types ) ) 
+)
+
+# Column types:
+stopifnot( 
+  "The 'snp_coord' column in the mQTL file provided by the user must be of the 
+  type 'integer', 'numeric' or 'double'. (It should only contain positive whole numbers.)" =
+    metadata$types["snp_coord"] %in% c( "integer", "numeric", "double" ) 
+)
+stopifnot( 
+  "The 'snp_chr' column in the mQTL file provided by the user must be of the type 'integer'" =
+    metadata$types["snp_chr"] %in% c( "integer" )
+)
+stopifnot( 
+  "The 'cpg' column in the mQTL file provided by the user must be of the type 'character'" =
+    metadata$types["cpg"] %in% c( "character" )
+)
+rm(metadata)
+
+# IMPORT MQTL FILE:
+mqtl_file_df <- feather::read_feather( mqtl_file_path )
+
+
+# All snp_chr must be equal to chr_number:
+stopifnot(
+  "`snp_chr` must equal `chr_number` in every single row of the data frame 
+  provided via `mqtl_file_name_base_regex` and `mqtl_file_dir`. Please remove 
+  any rows with SNPs from other chromosomes." =
+    all( unique( mqtl_file_df$snp_chr ) %in% chr_number )
+)
+
+# There can be no duplicates of snp and cpg (i.e. only one unique row per
+# SNP x CpG combination):
+stopifnot(
+  "Every row in the data frame given via `mqtl_file_name_base_regex` and 
+  `mqtl_file_dir` must contain a *unique* combination of 'snp_chr', 'snp_coord' 
+  and 'cpg'. Please remove any duplicates." =
+    mqtl_file_df %>% distinct( snp, cpg ) %>% nrow() == 
+    mqtl_file_df %>% nrow()
+)
+
+# Remove mQTL file data frame:
+rm(mqtl_file_df); invisible( gc() )
+
+```
+
+
+
+# Check the summarising function
+
+```{r}
+# --------------------------   File must exist   --------------------------
+
+# If file does not exist and it is the default summarising function:
+if( !file.exists(sl_summarising_function) &
+    grepl("0501_summarising_function_default.R", sl_summarising_function) ){
+  stop( "The R file containing the default summarising function is not in its "
+        ,"expected location.")
+
+  # If file does not exist and it is a supplied summarising function:
+} else if( !file.exists(sl_summarising_function) &
+    !grepl("0501_summarising_function_default.R", sl_summarising_function) ){
+  stop( "'sl_summarising_function' ("
+        , sl_summarising_function
+        , ") does not exist. Please place an R file with a summarising function"
+        , " in the correct folder(s) or use the 'default' argument." )
+}
+
+# ---------------------    File must be in pipeline_dir/R     ---------------------
+
+stopifnot(
+  "The 'sl_summarising_function' file must placed in the root directory." =
+    grepl( file.path( pipeline_dir, "R" ), sl_summarising_function )
+)
+
+
+# --------------------------   Function name   --------------------------
+
+# The file must contain only one function and the name of that function must be
+# "summarising_function"
+
+# Helper function that sources file into temp environment, copies them to the
+# main/parent environment and them prints a list of the functions that were
+# sourced from the file:
+source_local_function <- function( ..., local = NULL){
+  tmp <- new.env( parent = parent.frame() )
+  source( ..., local = tmp )
+  funs <- names(tmp)[ unlist(eapply( tmp, is.function ))]
+  for( x in names(tmp) ){
+    assign( x, tmp[[x]], envir = parent.frame() )
+  }
+  list( sourced_functions = funs )
+}
+
+# Source the specified summarising function
+sourced_fun <- source_local_function( sl_summarising_function )
+
+# Stop unless only one function was sourced:
+stopifnot(
+  "The R file in 'sl_summarising_function' must contain exactly 1 function." =
+  length( sourced_fun$sourced_functions ) == 1
+)
+
+# Stop unless the name of the sourced summarising function is identical to
+# "summarising_function"
+stopifnot( 
+  "The name of the function supplied in the'sl_summarising_function' R file must be named \"summarising_function\"" =
+    sourced_fun$sourced_functions == "summarising_function"
+)
+
+# ------- CREATE TEST DATA ------- 
+
+set.seed(1927)
+n_cols <- 200
+col_names <- paste0(1:n_cols, "_01")
+m_rows <- 15
+row_names <- paste0("cg", sprintf( "%06d", 1:m_rows) )
+sl_id <- "SL123"
+
+# TEST DATA 1xn - 1 x m matrix without any missing data
+test_1xn <- matrix( runif(n = 1*n_cols, min = 0, max = 1), ncol = n_cols )
+colnames( test_1xn ) <- col_names
+rownames( test_1xn ) <- row_names[1]
+
+
+# TEST DATA 1xn_with_nas - 1 x m matrix with some missing data
+# Randomly generated indexes of cells to replace with NA
+na_cells <- sample( 1:ncol(test_1xn), 20, replace = FALSE)
+test_1xn_with_nas <- test_1xn 
+test_1xn_with_nas[, na_cells] <- NA  
+
+
+# TEST DATA mxn - m x n matrix without any missing data
+test_mxn <- matrix( runif(n = m_rows*n_cols, min = 0, max = 1), ncol = n_cols )
+colnames( test_mxn ) <- col_names
+rownames( test_mxn ) <- row_names
+
+
+# TEST DATA mxn_with_nas- m x n matrix with some missing data
+na_cells <- sample( 1:length(test_mxn)
+                    , size = floor( length(test_mxn)/10 )
+                    , replace = FALSE )
+test_mxn_with_nas <- test_mxn 
+test_mxn_with_nas[na_cells] <- NA  
+
+# Add the test data to a list - one list element per test data matrix
+test_data <- list( test_1xn, test_1xn_with_nas, test_mxn, test_mxn_with_nas )
+names(test_data) <- c( "1xn", "1xn_with_nas", "mxn", "mxn_with_nas" )
+
+
+# ------- TEST THE SUMMARISING FUNCTION ON TEST DATA ------- 
+
+# Run the function on the test data inside tryCatch(). Stop if error occurs.
+# Store resulting output in list. Use the same sl_id when testing.
+
+test_results <- lapply(1:length(test_data), function(i){
+  res <- tryCatch(
+  { summarising_function(mat = test_data[[i]], sl_id = sl_id) }
+  , error = function( e ){
+  cat("Testing summarising_function() on"
+      , names(test_data[i])
+      , "test data results in the following error:\n"
+      , e$message
+      , "\nThe supplied summarising function may not be suitable for use in"
+      , "the pipeline. Please review you function carefully before continuing.")
+    # # Stop because of error:
+    # stop(e)
+  }
+  , warning = function( w ){
+    cat("Testing summarising_function() on"
+        , names(test_data[i])
+        , "test data results in the following warning:\n"
+        , w$message
+        , "\nThe supplied summarising function may not be suitable for use in"
+      , "the pipeline. Please review you function carefully before continuing.")
+  } ) 
+  # NB! output from summarising_function is not returned by tryCatch if a
+  # warning or error occurred. In these cases, test_results[[i]] contains NULL.
+})
+names(test_results) <- c( "1xn", "1xn_with_nas", "mxn", "mxn_with_nas" )
+
+# CHECK TEST OUTPUT  
+
+# Check the output from testing the summarising function on the different test
+# data. 
+
+# But first, identify and remove test results that are NULL because tryCatch did
+# not return a data object due to an error or warning occurring inside the
+# summarising function. Warn user about this.
+
+test_data_with_null_results <- sapply(test_results, is.null)[which( sapply(test_results, is.null) == TRUE ) ]
+
+if( any( sapply(test_results, is.null) ) ){
+  # Warn user:
+  warning( 
+    "The output of the summarising function when applied to the following test"
+    , " data will not be examined:\n    "
+    , paste( names(test_data_with_null_results), collapse = "\n")
+    ,"\nThis is due to errors/warnings occurring inside the function itself"
+    , " when applied to the test data."
+  )
+  # Remove the NULL result from the result list:
+  test_results <- test_results[which( sapply(test_results, is.null) == FALSE ) ]
+}
+
+# Stop unless all the elements in test_results are not NULL:
+stopifnot( any( sapply(test_results, is.null) ) == FALSE )
+
+# Check the matrices produced when applying function to test data:
+check_test_results <- lapply(1:length(test_results), function(i){
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # The output must be a 1 x n matrix:
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if( is.matrix(test_results[[i]]) == FALSE ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a matrix.")
+  }
+  if( nrow(test_results[[i]]) != 1  ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a matrix with only 1 row.")
+  }
+  if( ncol(test_results[[i]]) != n_cols  ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a matrix with the same number of columns"
+        , " as the test data.")
+  }
+  
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # The cells of output matrix must be numeric only: 
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if( all( is.numeric( test_results[[i]] ) ) == FALSE ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a matrix consisting exclusively of"
+        , " numeric values.")
+  }
+  
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # Output matrix columns must have same names and order as input matrix:
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+  # First, check that none of the column names are NULL: 
+  if( any( is.null(colnames( test_results[[i]] ))) ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data returns a matrix without column names.")
+  }
+  if( all( colnames( test_results[[i]] ) == colnames( test_data[[i]]) ) == FALSE ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a matrix where the columns "
+        , "1) have the exact same names as in the test data, and "
+        , "2) are in the exact same order as in the test data.")
+  }
+ 
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # Row name must be equal to the SL ID given as sl_id argument:
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+  # First, check that the row name is not NULL: 
+  if( is.null(rownames( test_results[[i]] ) ) ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data returns a matrix without row names.")
+  }
+
+  if( rownames( test_results[[i]] ) %in% sl_id == FALSE ){
+    stop("Testing summarising_function() on "
+         , names(test_results[i])
+        , " test data does not return a 1 x m matrix where the rowname is equal"
+        , " to the SL ID supplied via the `sl_id` argument." )
+  }
+  
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  # WARNING if any of the output contains NAs:
+  #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+  if( any( is.na( test_results[[i]]) ) | 
+      any( test_results[[i]] %in% c(NaN, Inf, -Inf ) )  ){
+    warning("**IMPORTANT WARNING**!  
+    "
+    , "Testing summarising_function() on "
+    , names(test_results[i])
+    , " test data returns 
+    a 1 x m matrix containing the following value(s): "
+    , unique( as.vector( test_results[[i]])[ 
+      which( as.vector( test_results[[i]]) %in% c(NA, NaN, Inf, -Inf ) )
+    ] )
+    , "  
+    
+    PLEASE ENSURE THAT THIS WILL NOT OCCUR WHEN APPLIED YOUR 
+    PARTICULAR DATA BEFORE PROCEEDING FURTHER WITH THE PIPELINE!
+    If there are missing values (NA) in your non-genotype data, 
+    *do not* run the pipeline with this particular summarising function.")
+  }
+})
+
+```
+
+
+```{r}
+readr::write_lines("Line number = 1168", file = rmd_log_file_path, append = TRUE)
+```
+
+
+# Check PLINK set-up
+
+
+**PLINK 1.90** Windows 64-bit Stable (beta 6.36, 2 Apr) Downloaded from
+www.cog-genomics.org/plink2/
+
+
+## Check if PLINK is in the specified root directory
+
+
+```{r}
+stopifnot(
+  "There is no plink.exe file in the provided root_dir!" =
+    file.exists("plink.exe")
+)
+```
+
+## Check that current working directory returned by `system()` is the same as `root_dir``
+
+```{r}
+output_message <- system( "pwd", intern = TRUE, timeout = 30 )
+
+# Stop if "pwd" does not return the same directory as the provided root
+# directory:
+stopifnot(
+  "The provided root directory appears to be different from the current directory returned by `pwd`. Review your working directory and root_dir." =
+    # Compare pwd with root_dir:
+    # Remove leading forward slash and any colons:  
+    gsub("^/|:", "", tolower( output_message ) ) ==
+    # Remove leading forward slash and any colons:  
+    gsub("^/|:", "", tolower( root_dir ) )
+)
+
+```
+
+```{r}
+readr::write_lines("Line number = 1208", file = rmd_log_file_path, append = TRUE)
+readr::write_lines( paste0("\nps::ps_system_memory()$avail / 1024^2: "
+                           , ps::ps_system_memory()$avail / 1024^2
+                           ,"\n\nPercentage of memory that is taken: "
+                           , ps::ps_system_memory()$percent )
+                    , file = rmd_log_file_path
+                    , append = TRUE)
+```
+
+## PLINK version
+
+Check if `plink.exe` in `root_dir` is the correct version.
+
+```{r}
+external_command_result <- processx::run( 
+  command = "plink"
+  , args = "--version"
+  # , args = "--no-web"
+  , wd = root_dir
+  # Clean up the child process tree after the process has finished
+  , cleanup_tree = TRUE
+  , echo = TRUE
+  # Whether to hide the window of the executable on windows:
+  , windows_hide_window = TRUE
+  # Whether to throw error if the command returns with a non-zero status or is
+  # interrupted (necessary in order to return result list with status, stdout
+  # component etc.)
+  , error_on_status = FALSE
+  # This should not take more than a few seconds. Time-out after 30 seconds:
+  , timeout = 30
+  )
+output_message <- external_command_result$stdout
+cat( output_message, sep = "\n" )
+
+sapply( 1:length(external_command_result), function(i){
+  paste0( "\n"
+          , names(external_command_result)[i]
+          , " = "
+          , external_command_result[[i]]
+          ) %>%
+    readr::write_lines( ., file = rmd_log_file_path, append = TRUE )
+} )
+
+if( external_command_result$status != 0 ){
+  stop_message <- paste0("The `plink --version` command returned non-zero exit status "
+       , external_command_result$status
+       , "\nThis is most likely due to local issues such as memory."
+       , "\nIf this keeps occurring, try using fewer cores. "
+       , "If that does not help, consider contacting your system administrator"
+       , " or a technical support service."
+  )
+    stop_message %>% 
+      readr::write_lines( ., file = rmd_log_file_path, append = TRUE )
+  stop( stop_message )
+}
+
+if( class(output_message) != "character" ){
+  stop( "Running system( \"plink\", intern = TRUE ) did not return a "
+        , "\"character\" object as expected. It returned the following:\n"
+        , output_message
+  )
+}
+
+if( external_command_result$timeout == TRUE ){
+  stop("The `plink --version` command timed out."
+       , "\nThis is most likely could due to local issues such as memory."
+       , "\nIf this keeps occurring, try using fewer cores.")
+}
+
+# Log output message:
+c( "\n*** system( \"plink\", intern = TRUE ) output:", output_message, "\n") %>% 
+  readr::write_lines( ., file = rmd_log_file_path, append = TRUE )
+
+
+# Stop if the output from the "plink" command does not contain mention of the
+# PLINK version "v1.90":
+if( !any( grepl("PLINK v1.90", output_message) ) ){
+  stop("\"plink --version\" returned the following:\n"
+       , output_message
+       ,"\nIt appears that root_dir does not contain the required version(s) of PLINK. Please check the version of plink.exe."
+       , "\nIf that is not the issue then check the amount of memory allocated to PLINK ('plink_memory_mb')."
+       )
+}
+```
+
+```{r}
+readr::write_lines("Line number = 1290", file = rmd_log_file_path, append = TRUE)
+```
+
+# File Existence
+
+Do the user-provided files exist?
+
+```{r}
+message("Checking file paths...")
+stopifnot(
+  # EWAS fileset:
+  "The EWAS ffData file does not exist. 
+  Please review your EWAS fileset path/filename and try again." =
+    file.exists(file.path( root_dir, paste0( ewas_fileset_name, "_env.ffData")))
+  
+  , "The EWAS RData file does not exist. 
+  Please review your EWAS fileset path/filename and try again." =
+    file.exists( file.path( root_dir, paste0(ewas_fileset_name, "_env.RData")) )
+  
+  , "The EWAS map file does not exist. 
+  Please review 'ewas_map_file_name' and try again." =
+    file.exists( file.path( root_dir, ewas_map_file_name ) )
+  
+  # GWAS PLINK fileset:
+  , "The bed file does not exist. 
+  Please review your GWAS fileset path/filename and try again." =
+    file.exists( file.path( root_dir, paste0( gwas_fileset_name, ".bed") ) )
+  
+  , "The bim file does not exist. 
+  Please review your GWAS fileset path/filename and try again." =
+    file.exists( file.path( root_dir, paste0(gwas_fileset_name, ".bim") ) )
+  
+  , "The fam file does not exist. 
+  Please review your GWAS fileset path/filename and try again." =
+    file.exists( file.path( root_dir, paste0( gwas_fileset_name, ".fam") ) )
+)
+
+message("OK.")
+```
+
+```{r}
+readr::write_lines("Line number = 1331", file = rmd_log_file_path, append = TRUE)
+```
+
+# bim file from GWAS Data
+
+Check that the GWAS fileset only contains variants located on the chromosome being studied in this run of the pipeline. 
+
+```{r}
+message("Loading .bim file from GWAS fileset...")
+bim <- readr::read_delim(
+  paste0( gwas_fileset_name, ".bim")
+  , col_names = c( "chr", "snp", "pos", "coord", "allele_1", "allele_2" )
+  , show_col_types = FALSE
+)
+
+# SNP ID must be character strings:
+stopifnot(
+  "The column containing the variant IDs in the .bim file must contain character strings only." =
+    all( is.character(bim$snp) ) 
+)
+
+
+# SNP CHROMOSOME
+message("Checking GWAS fileset chromosome...")
+stopifnot(
+  "The chromosome column in the .bim file must contain whole numbers only." =
+    all( is_whole_number(bim$chr) ) 
+)
+stopifnot( 
+  "The PLINK fileset contains variants from more than one chromosome." =
+    length( unique( bim$chr ) ) == 1
+  , "The PLINK fileset contains variants from another chromosome than the one specified." =
+    unique( bim$chr ) == chr_number
+  , "The chromosome column in the .bim file must contain whole numbers between 1 and 22" =
+    all(  bim$chr > 0 & bim$chr < 23 ) 
+)
+message("OK.")
+
+# SNP COORDINATES > 0
+stopifnot(
+  "The coordinate column in the .bim file must contain whole numbers only." =
+    all( is_whole_number(bim$coord) ) 
+)
+stopifnot(
+  "The coordinate column in the .bim file must only contain whole numbers greater than zero." =
+    all( bim$coord > 0 ) 
+)
+
+# SNPS WITH THE SAME LOCUS/GENOMIC COORDINATES:
+message("Looking for genetic variants with identical loci...")
+# Stop unless every row contains a unique combination of chr and coord:
+if( ( bim %>% distinct(chr, coord) %>% nrow() ) != nrow( bim ) ){
+  stop(
+  "Chr", chr_number, ": "
+  , "The PLINK fileset contains variants with identical genomic coordinates."
+  , "The pipeline requires that there is only one variant per unique locus."
+  )
+}
+message("OK.")
+
+# BIM FILE MUST BE SORTED BY SNP COORDINATE IN ASCENDING ORDER
+# Stop unless bim is identical to bim sorted by coord in ascending order
+stopifnot(
+  "The variants in the GWAS fileset must be sorted by coordinate and in ascending order." =
+    identical( bim %>% arrange( coord ) , bim )
+)
+```
+
+
+
+# EWAS Data
+
+```{r}
+readr::write_lines("Line number = 1404", file = rmd_log_file_path, append = TRUE)
+```
+
+## Set `fftempdir` to folder in stage directory
+
+This ensures that the temporary files get deleted once they are no longer needed. Otherwise, we risk the temporary ff files being stored in Temp folders where we cannot delete them due to permission peculiarities. (On elcajon, the the temporary ff file is written to `Users/_username_/AppData/Local/Temp/Rtmpxxxx/ff/Users/_username_/AppData/Local/Temp/Rtmpxxxx/ff/ffxxxxxxxxxx.ff`, and the file cannot be deleted while the R session is running, even though the ff object is closed using `close`. Error message: `'Permission denied'`)
+
+```{r}
+# Display default temporary directory for ff files:
+getOption("fftempdir")
+
+# Create folder in stage directory for temporary ff files:
+fftempdir_path <- file.path(root_dir, stage_dir, "fftemp")
+if( !dir.exists( fftempdir_path ) ){
+  dir.create( fftempdir_path )
+}
+
+# Change default temporary directory to folder in stage_directory:
+options(fftempdir = fftempdir_path )
+# Stop unless option was successfully changed:
+stopifnot( getOption("fftempdir") == fftempdir_path )
+getOption("fftempdir")
+```
+
+
+## Load EWAS Data
+
+```{r}
+message("Loading EWAS fileset...")
+ewas <- HaplinMethyl::envDataLoad( filename = ewas_fileset_name
+                                   , dir.in = root_dir 
+)
+invisible( gc() ) # garbage collection
+```
+
+
+## Number of chunks in the `env.data`
+
+```{r}
+# In stage 0501, the EWAS data is subsetted repeatedly, many times, in order to
+# calculate the summarised individual beta values and strata allocation numbers
+# for each state locus. 
+# If the env.data object containing the EWAS has more than one chunk due to
+# having more than 10,000 columns (see zzz.R in HaplinMethyl), then subsetting
+# the EWAS data gets quite complicated and the functions in HaplinMethyl that
+# performs subsetting of chunked env.data are relatively slow.
+# Subsetting the ff_matrix in the env.data directly is much faster, but this can
+# only be done on one chunk at a time, and combining the subsets extracted from
+# each chunk's ff_matrix into one large matrix before applying the summarising
+# function etc., is somewhat complicated (It should be possible, but it requires
+# more time to implement than I currently have at my disposal).
+
+# For this reason, the pipeline currently requires that the supplied EWAS data
+# can only consist of one chunk. This basically means that the data cannot
+# contain measurements from more than 10,000 samples.
+
+# Check that the env.data containing the EWAS data only has one chunK:
+stopifnot( "The EWAS data has more than one chunk!" = length(ewas) == 1 )
+```
+
+
+
+## Check for Missing Values
+
+```{r}
+# Get number of elements in ewas (list object)
+n_elements <- length(ewas) 
+
+# # Dev: For testing how code works when ewas contains missing values:  
+# ewas[[1]][1,5] <- NA # This results in cell containing NaN for some reason.
+
+# is.nan and is.infinite does not work like is.na in that it cannot be applied
+# to entire matrices. We will therefore look at one column at a time. We will
+# stop the for loop and issue a warning at the very first occurrence of an
+# invalid or missing value (NA, Nan, Inf)
+
+# For every element i in ewas:
+exit_nested_loop <- FALSE
+for( i in 1:n_elements ){
+  # And for every column j in the matrix contained in element i:
+  for( j in 1:ncol(ewas[[i]]) ){
+    
+    # See if there are any missing/invalid values in this column:
+    missing_value_found <- any( is.nan(ewas[[i]][ , j]) ) |
+      any( is.infinite(ewas[[i]][ , j]) ) |
+      any( is.na(ewas[[i]][ , j]) ) 
+    
+    # If missing/invalid value found, warn user and then exit loop:
+    if( missing_value_found ){
+      warning( 
+        "Missing or invalid value(s) located in column \""
+        , colnames(ewas[[i]])[j]
+        , "\". There may be more columns with missing or invalid values.\n"
+        , "DO NOT PROCEED WITH THE PIPELINE UNLESS YOU HAVE PROVIDED A "
+        , "SUMMARISING AND STRATIFYING FUNCTION THAT YOU ARE CERTAIN WILL "
+        , "HANDLE THESE VALUES SUCH THAT EVERY SINGLE SAMPLE/FAMILY UNIT WILL "
+        , "BE ALLOCATED TO A STRATUM FOR EVERY STATE LOCUS.\n"
+        , "Please try again with a EWAS/non-genotype data set without any "
+        , "missing or invalid values unless you are very confident that you "
+        , "have supplied robust functions via the `sl_summarising_function` "
+        , "and `sl_stratifying_function` arguments."
+      )
+      exit_nested_loop <- TRUE
+      break
+    }
+    if( exit_nested_loop ){break}
+  }
+  
+}
+# invisible( gc() )
+```
+
+
+
+## Check Individual/Sample IDs in EWAS Data
+
+```{r}
+message( "Checking sample IDs in EWAS data...")
+ewas_indivs <- summary(ewas, short = FALSE )$colnames
+
+# Check that the IDs are unique:
+stopifnot( "The sample IDs in the EWAS data contain duplicates! 
+           Please ensure that your EWAS data contains only unique individuals." =
+             length(ewas_indivs) == length(unique(ewas_indivs)) 
+)
+
+# Check if the IDs follow the required pattern:
+# if( all( grepl("^\\d*_\\d*$", ewas_indivs ) ) ){
+#   message( "Format of IDs in EWAS data OK.")
+# } else{
+#   stop( "The sample IDs in the EWAS data do not follow the required pattern ({Family ID}_{Individual ID}).
+#         Please update the IDs in your EWAS data.")
+# }
+
+stopifnot(
+  "The sample IDs in the EWAS data do not follow the required pattern ({Family ID}_{Individual ID}).
+        Please review the IDs in your EWAS data.
+        Note that the columns must represent samples/individuals and the row must represent EWAS probes." =
+    all( grepl("^\\d*_\\d*$", ewas_indivs ) ) 
+) 
+message( " OK.")
+```
+
+## Check Probe IDs in EWAS Data
+
+```{r}
+message( "Checking probe IDs in EWAS data...")
+ewas_probes <- summary(ewas, short = FALSE )$rownames
+
+# Check that the IDs are unique:
+stopifnot( "The probe IDs in the EWAS data contain duplicates! 
+           Please ensure that your EWAS data contains uniquely named probes." =
+             length(ewas_indivs) == length(unique(ewas_indivs)) 
+)
+```
+
+# EWAS map file
+
+## Import map file
+
+```{r}
+# Import the map file:
+map <- feather::read_feather( 
+  file.path( root_dir, ewas_map_file_name) 
+)
+```
+
+## Check if map file adheres to requirements
+
+```{r}
+# Function that checks if vector only contains whole numbers:
+int_test_vec <- function(x){ suppressWarnings( 
+  if( all( (as.numeric( x ) %% 1 == 0) %in% TRUE ) ){
+    return(TRUE) } else return(FALSE)  
+) }
+# (Returns TRUE if a string contains a whole number or if numeric is a whole
+# number)
+
+# Check chromosome number etc. in map file
+stopifnot( 
+  "The provided EWAS map file is not a data.frame object." =
+    any( class(map) %in% "data.frame" )
+  , "The EWAS map file contains missing values." =
+    all( !is.na( map ) )
+  , "The provided EWAS map file does not contain column with the required names." =
+    sum( colnames(map) %in% c("probe_id", "chr", "coord") ) == 3
+  
+  , "The 'probe_id' column in the EWAS map file must have the class 'character'." =
+    class( map$probe_id ) %in% "character"
+  , "The 'probe_id' column in the EWAS map file contains duplicates." =
+    length( unique( map$probe_id ) ) == nrow( map )
+  
+  , "The 'chr' column in the EWAS map file must be a numeric." =
+    is.numeric( map$chr ) 
+  , "The 'chr' column in the EWAS map file must contain whole numbers only." =
+    int_test_vec( map$chr )
+  , "There are no rows the EWAS map file where 'chr' = the specified chromosome." =
+    any( unique( map$chr ) %in% chr_number )
+  
+  , "The 'coord' column in the EWAS map file must be a numeric." =
+    is.numeric( map$coord ) 
+  , "The 'coord' column in the EWAS map file must contain whole numbers only." =
+    int_test_vec( map$coord )
+  
+  , "The provided EWAS map file does not contain coordinates from the specified chromosome." =
+    all( map$chr)
+  )
+
+# Check if the map file contains only unique combinations of probe_id, chr and
+# coord and that it only  contains unique combinations of chr and coord (i.e. no
+# duplicate loci)
+# This is important as we do not want future joins to result in multiple rows
+# per probe_id.
+n_unique_rows <- map %>% distinct( ) %>% nrow()
+n_unique_loci <- map %>% select( chr, coord ) %>% distinct() %>% nrow()
+
+stopifnot(
+  "Every row in the EWAS map file must contain a unique combination of probe_id, chr and coord!" =
+    n_unique_rows == nrow( map )
+  , "This data frame contains duplicate loci (i.e. not all combinations of 'chr' + 'coord' are unique)." =
+    n_unique_loci == nrow( map )
+)
+
+# Ensure that the map data frame only contains rows where chr = chr_number
+if( length(unique(map$chr)) > 1 ){
+  warning( ewas_map_file_name, " contains probes from "
+           , length(unique(map$chr)), " different chromosomes.\n"
+           , "Probes from other chromosomes than chr "
+           , chr_number, " will be excluded." )
+}
+rm(map)
+invisible( gc() ) # garbage collection
+```
+
+
+```{r}
+readr::write_lines("Line number = 1640", file = rmd_log_file_path, append = TRUE)
+```
+
+# Load GWAS .fam File
+
+```{r}
+message("Loading .fam file...")
+# Import the fam file from 0006:
+fam <- readr::read_delim(
+  file.path( root_dir, paste0( gwas_fileset_name, ".fam" ) )
+  , col_names = c( "id.fam", "id", "id.f", "id.m", "sex", "cc" )
+  , show_col_types = FALSE
+)
+
+fam %>% summarise( n(), n_distinct(id.fam), n_distinct(id.fam, id))
+
+# Create derived variables for later:
+fam %<>% 
+  mutate( id_unique = paste0( id.fam, "_", sprintf("%02d", id ) ) ) %>% 
+  group_by( id.fam ) %>% 
+  mutate(
+    father_id = max( id.f, na.rm = T )
+    , is_father = id == father_id
+    , n_father = sum( id == father_id )
+    
+    , mother_id = max( id.m, na.rm = T )
+    , is_mother = id == mother_id
+    , n_mother = sum( id == mother_id )
+    
+    , is_parent = is_father | is_mother 
+    
+    , n_children = sum( id.f != 0 & id.m != 0 )
+    , is_child = !is_father & !is_mother
+    , child_id = ifelse( is_child == T, yes = id, no = NA ) 
+    , min_child_id = min( child_id, na.rm = T )
+    
+    , is_proband = id == min_child_id
+    
+  ) %>% 
+  ungroup()
+
+fam %>% count( is_child, is_parent )
+fam %>% count( is_child, is_proband, n_children )
+```
+
+
+# Check Sample IDs
+
+Required format:  
+  * Family ID (first column) must be an integer  
+  
+  * Individual ID (second column) must be an integer  
+  
+  * Each line in the `.fam` file must contain a *unique* combination of Family ID and individual ID. (I.e. all {Family ID}_{Individual ID} made by combining the first and second column have to result in a unique ID that does not have any duplicates.)  
+  
+
+```{r}
+message("Checking sample IDs in GWAS data...")
+# is_whole_number <- function(x){ as.numeric( x ) %% 1 == 0 }
+# Source the function instead. Update path if parallel processing goes wrong due
+# to all the processes sourcing the same file.
+
+ind_ids_fam <- paste0(fam$id.fam, "_", fam$id )
+
+stopifnot(
+  "Family ID (first column in fam file) must be whole numbers." =
+    all(is_whole_number( fam$id.fam ) )
+    
+  , "Individual ID (second column in fam file) must be whole numbers." =
+    all( is_whole_number( fam$id ) )
+  
+  
+  ,"There are duplicate sample IDs in the PLINK fileset. The fileset must contains only unique combinations of Family ID and Individual ID." =
+    length(ind_ids_fam) == length( unique(ind_ids_fam) )
+)
+message("OK.")
+```
+
+
+# Check family unit structure
+
+
+```{r}
+# Check that there is only one mother/father per family
+stopifnot(
+  ".fam file contains family with more than one mother." =
+    max( fam$n_mother ) <= 1
+  , ".fam file contains family with more than one father." =
+    max( fam$n_father ) <= 1
+)
+# Check that there is at least one child per family
+stopifnot(
+  ".fam file contains family wihtout any children." =
+    min( fam$n_children ) >= 1
+)
+# Check that none of the individuals are classified as both parent and child: 
+stopifnot(
+  ".fam file contains individual who is classified as both parent and child." =
+    ( fam %>% filter( is_parent == T & is_child == T ) %>% nrow() ) == 0
+)
+```
+
+
+
+# Check Other Arguments
+
+(Move tests from the various Rmd files over here so that any problems are detected early on, allowing the user to abort the run if there is an unwanted, but not crucial, mistake.)
+
+
+## EWAS family member
+
+```{r}
+stopifnot(
+  "The pipeline currently only supports using child EWAS data (ewas_family_member = 'c')." =
+  ewas_family_member == "c"
+)
+# Must match the suffix in the column name of one of these columns in cov.data
+# (element of the haplin.object being used in the SNP-by-SNP analyses)
+```
+
+# All checks complete!
+
+```{r}
+message("All preliminary checks complete.\n")
+message("Identifying study population suitable for pipeline...\n")
+```
+
+# Extract Pipeline-Suitable Population
+
+Extract only families where  
+
+A) the proband and at least one parent have GWAS data, and  
+  
+B) the specified family member (chosen by the user) has EWAS data.
+  
+  
+> A) the proband and at least one parent have GWAS data,  
+
+Dyads are OK, but the proband must have genotype data. Any siblings must also have genotype data - if not, we throw an error and the pipeline stops.   
+  
+  
+> B) the specified family member (chosen by the user) has EWAS data.
+
+The user can specify which family member's (m/c/f) EWAS data they want to use in the analyses, i.e. which family member's epigenetic data they want to determine the stratification of the family units for each SNP being examined. (We currently only support `"c"` (child) as an argument. `"m"` (mother) and `"f"` (father) would demand further testing until we could offer this as an option.)
+
+
+# Generate PLINK genotyping rate summary file
+
+```{r}
+readr::write_lines("Line number = 1789", file = rmd_log_file_path, append = TRUE)
+```
+
+```{r}
+message("Generate genotyping rate summary using PLINK's --missing command...")
+
+plink_command <- paste0( 
+  "plink "
+  # Choose merged fileset from 0005:
+  , "--bfile "
+  , gwas_fileset_name
+  
+  # Exclude the SNPs gathered in our combined list:
+  ,  " --missing " 
+  # Specify dir + name of resulting imiss/lmiss files:
+  , " --out "
+  , file.path( stage_dir, paste0( stage_dir, "_missing_report" ) )
+  # Tell PLINK how much memory to reserve for its main workspace
+  , ifelse( is.na(plink_memory_mb)
+            , yes = "" # if not specified, don't add --memory flag
+            , no = paste0( " --memory ", plink_memory_mb ) )
+)
+message( "Running PLINK using the following command:\n"
+         , plink_command )
+
+
+# Generate "missingness" reports:
+output_msg <- system( plink_command , intern = TRUE, timeout = plink_memory_mb )
+cat(output_msg, sep = "\n")
+
+# Import the imiss file:
+imiss <- utils::read.table( "0101/0101_missing_report.imiss", header = TRUE )
+
+# Add F_MISS (the missing call rate) to fam using join:
+fam %<>% 
+  dplyr::left_join( . , imiss #%>% select( FID, IID )
+                    , by = c( "id.fam" = "FID", "id" = "IID")
+  )
+rm(imiss) # no longer needed
+```
+
+
+```{r}
+readr::write_lines("Line number = 1835", file = rmd_log_file_path, append = TRUE)
+```
+
+# Check for individuals in GWAS data with 100% missing call rate
+
+## Stop if proband does not have genotype data
+
+```{r}
+stopifnot(
+  "There appears to be at least one family with a proband that has a 100% missing call rate. Please remove these probands (or the family units entirely) before running the pipeline." =
+    ( fam %>% filter( is_proband & N_MISS == N_GENO ) %>% nrow() ) == 0
+)
+```
+
+## Stop if there are non-proband children without genotype data
+
+```{r}
+stopifnot(
+  "There appears to be at least one family with multiple children where the non-proband sibling(s) has a 100% missing call rate. Please remove these siblings prior to running the pipeline." =
+    (fam %>% filter( is_child & !is_proband & N_MISS == N_GENO ) %>% nrow()) == 0
+)
+```
+
+
+# Identify families where the children and at least one parent have GWAS data
+
+```{r}
+#qqq Should having at least one parent with GWAS data only be a requirement when haplin_design does not contains "cc"? 
+fam %<>% 
+  mutate( proband_has_genotype_data = is_proband & N_MISS < N_GENO
+          , sibling_has_genotype_data = 
+            is_child &
+            !is_proband &
+            N_MISS < N_GENO
+          , mother_has_genotype_data = is_mother & N_MISS < N_GENO
+          , father_has_genotype_data = is_father & N_MISS < N_GENO
+  ) 
+
+fam %<>% 
+  group_by( id.fam ) %>% 
+  mutate(
+    children_have_genotype_data = ifelse( 
+      n_children == 1 
+      # If only 1 child, there must be one proband with genotype data: 
+      , yes = sum( proband_has_genotype_data, na.rm = T) == 1
+      # If 2+ children, number of probands with genotype data (=1) + the number
+      # of siblings with genotype data must equal the number of children in the
+      # family:
+      , no = ( sum( proband_has_genotype_data, na.rm = T) +
+                 sum( sibling_has_genotype_data, na.rm = T) ) ==
+        unique( n_children )
+    )
+    , at_least_one_parent_has_genotype_data =
+      sum( mother_has_genotype_data, na.rm = T) == 1 |
+      sum( father_has_genotype_data, na.rm = T) == 1
+  ) %>% 
+  ungroup()
+
+# Create column indicating whether the family meets the requirements in terms of 
+# genotype data:
+fam %<>% 
+  mutate( family_meets_gwas_requirements = 
+            ifelse( children_have_genotype_data == TRUE &
+                      at_least_one_parent_has_genotype_data == TRUE 
+                    , yes = TRUE, no = FALSE )
+  )
+
+fam %>% count( family_meets_gwas_requirements
+               , children_have_genotype_data
+               , at_least_one_parent_has_genotype_data )
+
+# Create df with family ID and whether they meet gwas (genotype data)
+# requirements:
+families_gwas_requirements <- fam %>% 
+  select( id.fam, family_meets_gwas_requirements ) %>% 
+  distinct()
+# This will be joined with exclusion_df later.
+
+# #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# # Make test data where some families do not meet requirements for development
+# # purposes:
+# families_gwas_requirements$family_meets_gwas_requirements[1:20] <- FALSE
+```
+
+
+# Identify individuals of the specified family member type that have both GWAS and EWAS data
+
+**NB!** The EWAS data do not contain any information regarding whether the individuals are children, mothers or fathers. We therefore have to rely on the `.fam` files for this information.
+
+
+```{r}
+# Get the IDs in the GWAS data belonging to the specified type of EWAS family
+# member (currently only supports children):
+
+# If EWAS data is on children:
+if( ewas_family_member == "c" ){
+  ewas_family_member_ids_in_gwas <- fam %>%
+    filter( is_child == TRUE ) %>%
+    pull(id_unique)
+}
+# #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# # Make test vector containing some mothers and fathers also for dev purposes:
+# ewas_family_member_ids_in_gwas <- c(
+#   ewas_family_member_ids_in_gwas
+#   , (fam %>%
+#        filter( is_child == FALSE ) %>%
+#        sample_n( 20 ) %>%
+#        pull(id_unique) )
+#   )
+
+# rm(fam) #no longer needed
+
+# Are all of these IDs present in the EWAS data?
+
+# df with the eligible indivs from the GWAS data:
+gwas_ewas_family_member_df <-  data.frame( 
+  "ids_in_gwas_data" = ewas_family_member_ids_in_gwas 
+)
+rm(ewas_family_member_ids_in_gwas)
+
+# df with all the indivs from the EWAS data:
+ewas_ids_df <- data.frame( "ids_in_ewas_data" = 
+                             summary(ewas, short = FALSE )$colnames )
+# #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# # Make test vector containing a few bogus IDs for dev purposes:
+# ewas_ids_df <- data.frame( "ids_in_ewas_data" = 
+#                              c( summary(ewas, short = FALSE )$colnames
+#                                 , "666_01", "666_02", "666_03") 
+# )
+
+# Do full join of the dfs to create overview of which IDs can be found among the
+# eligible GWAS indivs and/or among the EWAS indivs: 
+family_member_type_df <- dplyr::full_join( gwas_ewas_family_member_df
+                                           , ewas_ids_df
+                                           , by = c( "ids_in_gwas_data" =
+                                                      "ids_in_ewas_data" )
+                                           , keep = TRUE
+) %>% 
+  mutate( matching_id = !is.na(ids_in_gwas_data) & !is.na(ids_in_ewas_data))
+
+message( "There are "
+         , sum(family_member_type_df$matching_id == TRUE)
+         , " individuals of the type \""
+         , ewas_family_member
+         ,"\" that are present in both the GWAS data and the EWAS data "
+         ,"out of a total of "
+         , nrow(gwas_ewas_family_member_df)
+         , " eligible individuals in the GWAS data and "
+         , nrow(ewas_ids_df)
+         , " individuals in total in the EWAS data."
+         )
+
+rm(gwas_ewas_family_member_df, ewas_ids_df)
+
+# IF THERE ARE INDIVIDUALS WIHOUT BOTH EWAS AND GWAS DATA, LET THE USER THE 
+# DECIDE WHETHER TO PROCEED WITH THE PIPELINE:
+
+# If 1 or more of the eligible indivs in the GWAS data DO NOT have matching IDs
+# in the EWAS data, issue warning and ask the user if they want to continue:
+
+n_eligible_gwas_indivs_with_no_match_in_ewas <- family_member_type_df %>%
+  filter( matching_id == FALSE & !is.na(ids_in_gwas_data) ) %>%
+  nrow() 
+
+if( n_eligible_gwas_indivs_with_no_match_in_ewas > 0 ){
+  warning( "There are "
+           , n_eligible_gwas_indivs_with_no_match_in_ewas
+           , " eligible individuals in the GWAS data that do not have a "
+           ,"matching ID in the EWAS data. These individuals (and most likely "
+           , "their families as well) will be removed from the data if "
+           , "you choose to continue."
+  )
+  continue <- utils::askYesNo(
+    # Prompt message for the user:
+    msg = paste0(
+      "There are "
+      , n_eligible_gwas_indivs_with_no_match_in_ewas
+      , " individuals of type \"", ewas_family_member, "\" "
+      , "that do not have a matching ID in the EWAS data.\n"
+      , "These individuals and their family units will be removed before "
+      , "commencing with the pipeline.\n\n"
+      , "Are you sure want to proceed? \n(Yes = Sure, I don't mind;\n"
+      , "No = No, let me fix this and try again.)"
+    )
+  )
+  cat( "continue = ", continue, "\n" )
+  if( !(continue %in% TRUE ) ) stop( "Pipeline stopped at the user's request.")
+}
+```
+
+
+```{r}
+readr::write_lines("Line number = 2026", file = rmd_log_file_path, append = TRUE)
+```
+
+
+# Make list of who to keep/remove
+
+Get the pipeline-ready (sub)population.
+  
+Remove:  
+
+* The individuals in the EWAS data that are not present among the GWAS individuals of the specified family member type, **if any**.  
+  
+* The individuals in the EWAS data belonging to a family where none of the parents have genotype data according to the `.imiss` report, **if any**.  
+
+* The families in the GWAS data who has one or several family members of the specified family member type, but these family members do not have a matching ID in the EWAS data, **if any**. 
+  
+
+```{r}
+# Make data frame with only the individuals with both EWAS + GWAS data that are
+# of the specified type according to the PLINK fileset
+family_member_type_df %<>% 
+  mutate( 
+    # Indiv ID to keep in EWAS:
+    keep_in_ewas_id = ifelse( matching_id == TRUE
+                                  , yes = ids_in_ewas_data, no = NA)
+    # Whether to keep indiv in EWAS:
+    , keep_in_ewas = ifelse( 
+      matching_id == TRUE & !is.na( keep_in_ewas_id )
+      , yes = TRUE, no = FALSE )
+
+    # Whether to *remove* indiv from EWAS:
+    , remove_from_ewas = ifelse( 
+      matching_id == FALSE & is.na( keep_in_ewas_id )
+      , yes = TRUE, no = FALSE )
+    # , keep_in_ewas = ifelse( 
+    #   is.na( ids_in_ewas_data )
+    #   , yes = NA, no = keep_in_ewas )
+    
+    # Family IDs in GWAS data:
+    , id_fam_in_gwas_data = as.integer( gsub( "_\\d*$", "", ids_in_gwas_data ) )
+    
+    # Indiv ID to remove from GWAS:
+    , remove_from_gwas_id = ifelse( matching_id == FALSE
+                                    , yes = ids_in_gwas_data, no = NA)
+    # Whether to remove indiv from GWAS:
+    , remove_from_gwas = ifelse( 
+      matching_id == FALSE & !is.na( remove_from_gwas_id)
+      , yes = TRUE, no = FALSE )
+
+    # Whether to *keep* indiv in GWAS:
+    , keep_in_gwas = ifelse( 
+       matching_id == TRUE & is.na( remove_from_gwas_id)
+      , yes = TRUE, no = FALSE )
+    # The family IDs of the indivs to remove from GWAS (remove IID suffix)
+    , remove_from_gwas_id_fam = gsub( "_\\d*$", "", remove_from_gwas_id)
+  )
+
+# Add column regarding whether family meets gwas requirements (at least one
+# parent with genotype data)
+family_member_type_df %<>% 
+  dplyr::left_join( . , families_gwas_requirements
+                    , by = c("id_fam_in_gwas_data" = "id.fam") 
+  )
+
+family_member_type_df %>%
+  mutate( remove_from_ewas = keep_in_ewas == FALSE ) %>% 
+  count( matching_id
+         , remove_from_ewas
+         , remove_from_gwas
+         , family_meets_gwas_requirements 
+  ) %>% 
+  janitor::adorn_totals() %>%
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+rm(families_gwas_requirements) # no longer needed
+
+# Update keep_in_ewas & remove_from_gwas columns
+# Set keep_in_ewas to FALSE in rows where the individual ID is present in both
+# ewas and gwas, but it belongs to a family who do not meet the gwas
+# requirements (no parental genotypes). Also update remove_from_gwas so that
+# these families are removed.
+family_member_type_df %<>% 
+  mutate( 
+    # Do not keep in ewas if family does not meet requirements:
+    keep_in_ewas = ifelse( family_meets_gwas_requirements %in% FALSE
+                           , yes = FALSE, no = keep_in_ewas
+    )
+    # Remove to gwas if family does not meet requirements:
+    , remove_from_gwas = ifelse( family_meets_gwas_requirements %in% FALSE 
+                                 , yes = TRUE, no = remove_from_gwas 
+    )
+  )
+
+family_member_type_df %>%
+  mutate( remove_from_ewas = keep_in_ewas == FALSE ) %>% 
+  count( matching_id
+         , remove_from_ewas
+         , remove_from_gwas
+         , family_meets_gwas_requirements 
+  ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+```
+
+
+## Export df with who will be removed and why
+
+```{r}
+exclusion_df <- family_member_type_df %>% 
+  filter( keep_in_ewas == FALSE | remove_from_gwas == TRUE ) %>% 
+  mutate( 
+    id_removed = ifelse( remove_from_gwas == TRUE
+                         , yes = ids_in_gwas_data, no = ids_in_ewas_data )
+    , family_removed_from_gwas = ifelse( 
+      remove_from_gwas == TRUE
+      , yes = gsub( "_\\d*$", "", id_removed)
+      , no = NA ) 
+    , reason = dplyr::case_when(
+      family_meets_gwas_requirements == FALSE ~ 
+        "family without parental genotype(s)"
+      , family_meets_gwas_requirements == TRUE ~ 
+        "id in gwas data but not in ewas data"
+      , matching_id == FALSE & !is.na(ids_in_ewas_data) ~
+        "id in ewas data but not gwas data"
+      , .default = NA
+    )
+    # ifelse( remove_from_gwas == TRUE
+            # , yes = "gwas"
+            # , no = "ewas" )
+  ) %>% 
+  select( id_removed, family_removed_from_gwas, reason ) %>% 
+  arrange( id_removed )
+
+# Export to stage directory:
+# (use excel_csv since the user may want to view it in Excel)
+readr::write_excel_csv2( 
+  exclusion_df
+  , file = file.path( stage_dir, "0101_removed_indivs_and_fams.csv" )
+  , append = FALSE # "overwrite = TRUE"
+)
+
+exclusion_df %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+```
+
+
+```{r}
+readr::write_lines("Line number = 2175", file = rmd_log_file_path, append = TRUE)
+```
+
+# Extract the pipeline-suitable population from the EWAS data and export
+
+Remove the samples that do not have GWAS data or parental genotype.  
+  
+Using `envDataSubset()` from `HaplinMethyl`. This produces an ffData + RData fileset with the chosen subset of data.
+  
+```{r}
+# IDs to keep in ewas:
+ewas_keep <- family_member_type_df %>% 
+  filter( keep_in_ewas == TRUE) %>% 
+  pull( ids_in_ewas_data ) %>% 
+  unique()
+
+# If ewas_keep contains the exact same IDs as the EWAS fileset (i.e. we're not
+# removing samples from the EWAS data), then skip this step and just copy the
+# EWAS fileset to the stage directory instead.
+
+# If we're keeping all the indivs in the EWAS data:
+if( all( summary(ewas, short = FALSE )$colnames %in% ewas_keep) ){
+  message("Copying EWAS fileset to stage directory...")
+  # The file extensions of the files in the EWAS fileset:
+  file_ext <- c(".ffData", ".RData")
+  
+  # The basis of "from" path:
+  from_basis <- file.path( root_dir, paste0( ewas_fileset_name, "_env") )
+  
+  # The basis of "to" path:
+  to_basis <- file.path( stage_dir, "0101_ewas_env" )
+
+  # For each file type:
+  lapply( 1:length( file_ext ), function(i){
+    
+    # Copy file to the stage directory:
+    file.copy( from = paste0( from_basis, file_ext[i])
+               , to = paste0( to_basis, file_ext[i])
+               , overwrite = TRUE
+               , copy.date = TRUE # preserve dates if possible 
+    )
+  })
+  stopifnot( 
+    "Copying EWAS fileset to the stage directory was not successful." =
+      file.exists( paste0( to_basis, file_ext[1]) ) &
+      file.exists( paste0( to_basis, file_ext[2]) )
+    
+    )
+  message("OK.")
+}else{ # If we're removing indivs from the EWAS data:
+  
+  message("Subsetting the EWAS data and exporting it to stage directory...")
+  
+  # Subset data and export new fileset:
+  ewas_pipeline <- HaplinMethyl::envDataSubset(
+    ewas
+    , col.names = ewas_keep 
+    , file.out = "0101_ewas"
+    , dir.out = stage_dir
+    , overwrite = TRUE
+  )
+  rm(ewas_pipeline) # no longer needed
+
+  
+  # Check that the resulting filesets contain only indivs in ewas_keep
+  # Load only the RData file:
+  loaded_rdata <- load( file.path( stage_dir, "0101_ewas_env.RData") ) 
+  # Get the column names/IDs from the RData attributes:
+  ewas_pipeline_ids <- attr( attr(env.cols.1, "virtual" ), "Dimnames")[[2]]
+  #qqq is the object always names env.cols.1 regardless of the data used to create the RData file? Must be tested. If this is specific to our particular EWAS data, then this will break the code.
+  
+  # Generate a warning if there is not a 100% overlap between IDs in ewas_keep
+  # and the newly exported subset of EWAS data:
+  if( !( all( ewas_pipeline_ids %in% ewas_keep ) &
+  all( ewas_keep %in% ewas_pipeline_ids ) ) 
+  ){
+    warning( "Something went wrong in HaplinMethyl::envDataSubset(). "
+             , "There is not a 100% overlap between 'ewas_keep' and "
+             , "the column names in the fileset exported by envDataSubset()."
+    )
+  }else{ message("Column names in exported fileset checked.")}
+  # Remove the loaded RData:
+  rm( list = c( loaded_rdata, "loaded_rdata" ), ewas_pipeline_ids ) 
+  # NB: removes 'cont'
+}
+
+
+# CLOSE AND DELETE TEMPORARY FF FILE(S)
+
+# Look at files currently being used by process
+ps::ps_open_files()
+
+# Check if the ff file(s) is open:
+# ff::is.open(ewas[[1]])
+sapply( 1:length(ewas), function(i) ff::is.open(ewas[[i]]) )
+
+# Close the ff file(s):
+# close(ewas[[1]])
+sapply( 1:length(ewas), function(i) close(ewas[[i]]) )
+
+# Check if the ff file(s) is still open:
+# ff::is.open(ewas[[1]])
+sapply( 1:length(ewas), function(i) ff::is.open(ewas[[i]]) )
+
+# Delete the temporary ff file(s):
+# ff::delete(ewas[[1]])
+sapply( 1:length(ewas), function(i) ff::delete(ewas[[i]]) )
+
+# Delete the entire fftempdir folder:
+status <- unlink( fftempdir_path, recursive = TRUE, force = TRUE )
+status
+#xxx Add warning if some values are equal to 1 (this means that deletion was unsuccessful)
+
+# Look at files currently being used by process
+ps::ps_open_files()
+rm( ewas ) # no longer needed
+invisible( gc() ) # garbage collection
+```
+
+
+```{r}
+readr::write_lines("Line number = 2294", file = rmd_log_file_path, append = TRUE)
+```
+
+
+# Extract the pipeline-suitable population from the GWAS data and export
+
+## Prepare tsv file with families to remove
+
+```{r}
+# Family IDs to remove from gwas:
+gwas_fam_remove <- family_member_type_df %>% 
+  filter( remove_from_gwas == TRUE) %>% 
+  select( id_fam_in_gwas_data ) %>% 
+  distinct()
+
+gwas_fam_remove %>% 
+  dplyr::summarise( n(), n_distinct(id_fam_in_gwas_data), ncol(.) )
+
+# Export tsv with Family IDs we want to remove from PLINK fileset
+readr::write_tsv( 
+  gwas_fam_remove
+  , file = file.path( stage_dir, "0101_gwas_remove_fam_ids.tsv" )
+  , col_names = FALSE
+)
+```
+
+## Use PLINK to subset data
+
+```{r}
+# If there are families to remove:
+if( nrow( gwas_fam_remove ) > 0 ){
+  message("Subsetting PLINK filesets...")
+  
+  processx_command <- "plink"
+  
+  processx_args <- c( 
+    # Choose fileset from root directory:
+    "--bfile"
+    , gwas_fileset_name
+
+    # Remove the families from our list:
+    , "--remove-fam" 
+    ,  file.path( stage_dir, "0101_gwas_remove_fam_ids.tsv" )
+    
+    # Export output to a new binary fileset in stage directory:
+    ,  "--make-bed" 
+    
+    , "--out"
+    ,  file.path( stage_dir, paste0( stage_dir, "_gwas" ) )
+    # Tell PLINK how much memory to reserve for its main workspace
+    , dplyr::case_when(
+      !is.na(plink_memory_mb) ~ c( "--memory", as.character(plink_memory_mb) )
+      , .default = NA
+    ) 
+  )
+  # Remove any vector elements that are NA due to no plink_memory_mb argument:
+  processx_args <- processx_args[which( !is.na(processx_args) )]
+  
+  plink_command <- paste( c( processx_command, processx_args), collapse = " " )
+  
+  message( "Running PLINK using the following command:\n"
+           , plink_command )
+  
+  external_command_result <- processx::run( 
+    command = processx_command
+    , args = processx_args
+    , wd = root_dir
+    # Clean up the child process tree after the process has finished
+    , cleanup_tree = TRUE
+    , echo = TRUE
+    # Whether to hide the window of the executable on windows:
+    , windows_hide_window = TRUE
+    # Whether to throw error if the command returns with a non-zero status or is
+    # interrupted (necessary in order to return result list with status, stdout
+    # component etc.)
+    , error_on_status = FALSE
+    # This should not take more than a few minutes Time-out after 660 seconds:
+    , timeout = plink_memory_mb
+  )
+  
+  output_message <- external_command_result$stdout
+  
+  # output_msg <- system( plink_command, intern = TRUE )
+  
+  c("*** PLINK output message, line number = 2350:", output_message, "\n") %>% 
+    readr::write_lines( ., file = rmd_log_file_path, append = TRUE)
+  
+  # cat(output_msg, sep = "\n")
+  message("OK...")
+  invisible( gc() ) # garbage collection
+}else{
+  # If there aren't any families to remove, copy fileset to stage directory:
+  message("No subsetting of PLINK filesets. Copying fileset to stage directory..")
+  from_file_paths <- list.files( 
+    # path = root_dir
+    path = "."
+    , pattern =  gwas_fileset_name
+    , full.names = TRUE
+  )
+  # Make sure paths are in alphabetical order (bed>bim>fam):
+  from_file_paths <- sort(from_file_paths)
+  to_file_paths <- file.path( stage_dir
+                              , paste0( stage_dir, "_gwas"
+                              , c(".bed", ".bim", ".fam") )
+  )
+  # Check that the from and to files are stored with the file extensions in the
+  # same order:
+  stopifnot(
+    all( tools::file_ext( from_file_paths ) == 
+           tools::file_ext( to_file_paths ) )
+  )
+  # Copy file to the stage directory:
+  copy_gwas_status <- file.copy( from = from_file_paths
+                            , to = to_file_paths
+                            , overwrite = TRUE
+                            , copy.date = TRUE # preserve dates if possible 
+                            )
+  stopifnot( all( copy_gwas_status == TRUE ) )
+  message("OK..")
+  
+}
+
+```
+
+## Check resulting PLINK fileset 
+
+Check that the resulting PLINK fileset contains the right set of families and individuals.
+
+```{r}
+#qqq Has been deleted by mistake or did I forget to implement it?
+```
+
+
+
+# Export family/individual summary 
+
+Summary of all the individuals wrt. whether or not they were removed from the EWAS data or the GWAS data. Useful when creating flowcharts/descriptions of study population.
+
+```{r}
+# Remove unnecessary columns:
+family_member_type_df %<>% 
+  select( ids_in_ewas_data
+          , ids_in_gwas_data
+          , matching_id
+          , remove_from_ewas
+          , remove_from_gwas
+          , remove_from_gwas_id_fam
+          , family_meets_gwas_requirements
+  )
+
+# Summary:
+family_member_type_df %>% 
+  head() %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+
+family_member_type_df %>% 
+  summarise( n()
+             , n_distinct(ids_in_gwas_data, na.rm = TRUE)
+             , n_distinct(ids_in_ewas_data, na.rm = TRUE)
+             , n_distinct(remove_from_gwas_id_fam, na.rm = TRUE)
+             , sum(matching_id, na.rm = TRUE)
+             , sum(remove_from_gwas, na.rm = TRUE)
+             , sum(remove_from_ewas, na.rm = TRUE)
+             , sum(family_meets_gwas_requirements, na.rm = TRUE)
+             ) %>% 
+  gt::gt() %>% 
+  gt::tab_options( table.font.size = "x-small" )
+
+# Export to csv:
+family_member_type_df %>% 
+  readr::write_excel_csv2(
+    file.path( root_dir, stage_dir, paste0( stage_dir, "_indiv_summary.csv") )
+  )
+```
+
+
+# Check if there are families with multiple children
+
+Check if there any families with more than one child. If so, warn the user that Haplin will extract multiple trios from this family - one for each child.
+
+```{r}
+# Consolidate the two ID columns into one column:
+family_member_type_df <- family_member_type_df %>% 
+  mutate( id = ids_in_gwas_data ) %>% 
+  select( id, everything() )
+
+# Remove unnecessary columns:
+family_member_type_df <- family_member_type_df %>% select( id )
+
+# Remove any individuals from family_member_type_df that were flagged for
+# removal and then removed:
+family_member_type_df <- family_member_type_df %>% 
+   filter( !( id %in% exclusion_df$id_removed ) )
+
+# Add columns from fam:
+family_member_type_df <- family_member_type_df %>% 
+  dplyr::left_join( .
+                    , fam %>% distinct( id_unique, id.fam, n_children )
+                    , by = c("id" = "id_unique" )
+  )
+
+# Keep only families with > 1 child:
+family_member_type_df <- family_member_type_df %>% filter( n_children > 1 )
+
+
+# If there are any families with > 1 child, write warning to log file:
+if( nrow( family_member_type_df ) > 0 ){
+  
+  logr::sep( "Families with more than one offspring")
+  
+  paste0( "There are "
+          , length( unique( family_member_type_df$id.fam ) )
+          , " families with more than one offspring among the "
+          , " families that qualify for analysis. "
+          , "When the genotype data is being processed by the Haplin, "
+          , "Haplin will extract one dyad/triad per offspring from each family."
+          , " If you do not want this to happen, you must supply a data set "
+          , "containing only families with one offspring and run the "
+          , "preprocessing stages again."
+  ) %>% logr::put()
+}
+
+```
+
+
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time - start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```

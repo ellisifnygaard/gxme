@@ -1,0 +1,684 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 18
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  root_dir: "C:/Temp/edj079/2024-05-01_pipeline_dir/chromosomes/Chr18"
+  
+  # EWAS file:
+  # ewas_fileset_dir: "0101" # "hard-code" 0101
+  # ewas_fileset_name: "0101_ewas" # "hard-code" 0101_ewas
+  
+  # EWAS map file
+  ewas_map_file_name: !r sprintf("ewas_map_hm450k_hg19_chr%02d.feather", params$chr_number)
+  
+  # Directory to export resulting files to:
+  stage_dir: "0301"
+title:  "`r paste0('0301 Remove CpGs from the EWAS data that are located on other chromosomes - Chromosome ', params$chr_number) `"
+---
+
+```{r}
+# setwd(params$root_dir) # useful when testing code
+```
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+The pipeline only processes one chromosome at a time. Hence the GWAS data contains only variants from one unique chromosome. We can therefore exclude the EWAS probes located on another chromosome than the one selected when initiating the pipeline. (as well as on the mitochondrial DNA, if applicable). This will make the EWAS data less memory consuming to process later in the pipeline.  
+  
+
+We will use the probe metadata (including chromosome number) from the **Illumina HumanMethylation450 v1.2 Manifest**. 
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# EWAS
+ewas_fileset_dir <- "0101" # "hard-code" 0101
+ewas_fileset_name <- "0101_ewas" # "hard-code" 0101_ewas
+
+# EWAS map file
+ewas_map_file_name <- params$ewas_map_file_name
+
+stage_dir <- params$stage_dir
+
+# Specify name of the probe list which will be produced:
+ewas_probe_list_path <- file.path( root_dir
+                                   , stage_dir
+                                   , paste0( stage_dir, "_probe_list.feather")
+)
+```
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+- A map file, provided by user, containing the coordinates of probes in the EWAS fileset. Used during this compilation: `r file.path( root_dir, ewas_map_file_name)``
+  
+- `0301_ewas_env.ffData/RData`
+
+## Files produced by this script
+
+-  EWAS data file containing only the established study population from 0101, and only CpGs located on selected chromosome (`0301_ewas_env.ffData/RData`)  
+ 
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(feather)
+library(ff)
+library(gt)
+```
+
+### HaplinMethyl
+
+There was previously a bug in `envDataSubset()` (issue #10) causing the function to not extract rows. This should be fixed now. 
+  
+**Package information**    
+
+- **Version:** v0.2  
+- **Downloaded on:** 14.06.2023  
+- **Downloaded from:** Julia's GitHub using `devtools::install_github()` outside of SAFE. Subsequently copied from library and into elcajon's "Import" folder.)  
+- **Imported to SAFE date:** 14.06.2023   
+
+```{r}
+library(HaplinMethyl)
+```
+
+
+# Import data
+
+## Import EWAS map file
+
+```{r}
+# Check that the map file exists:
+message("Checking map file path...")
+stopifnot(
+  "The supplied ewas_map_file_name does not point to an existing feather file" =
+    file.exists( file.path( root_dir, ewas_map_file_name ) )
+)
+message("OK.")
+
+# Import the map file:
+map <- feather::read_feather( 
+  file.path( root_dir, ewas_map_file_name ) 
+)
+
+map %>%
+  summarise( n(), n_distinct(probe_id), n_distinct(chr), n_distinct(chr, coord)) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+```
+
+
+### Check if map file adheres to requirements
+
+```{r}
+# This was moved to 0101:
+# # Function that checks if vector only contains whole numbers:
+# int_test_vec <- function(x){ suppressWarnings( 
+#   if( all( (as.numeric( x ) %% 1 == 0) %in% TRUE ) ){
+#     return(TRUE) } else return(FALSE)  
+# ) }
+# # (Returns TRUE if a string contains a whole number or if numeric is a whole
+# # number)
+# 
+# # Check chromosome number in map file
+# stopifnot( 
+#   "The provided EWAS map file is not a data.frame object." =
+#     any( class(map) %in% "data.frame" )
+#   , "The EWAS map file contains missing values." =
+#     all( !is.na( map ) )
+#   , "The provided EWAS map file does not contain column with the required names." =
+#     sum( colnames(map) %in% c("probe_id", "chr", "coord") ) == 3
+#   
+#   , "The 'probe_id' column in the EWAS map file must have the class 'character'." =
+#     class( map$probe_id ) %in% "character"
+#   , "The 'probe_id' column in the EWAS map file contains duplicates." =
+#     length( unique( map$probe_id ) ) == nrow( map )
+#   
+#   , "The 'chr' column in the EWAS map file must be a numeric." =
+#     is.numeric( map$chr ) 
+#   , "The 'chr' column in the EWAS map file must contain whole numbers only." =
+#     int_test_vec( map$chr )
+#   , "There are no rows the EWAS map file where 'chr' = the specified chromosome." =
+#     any( unique( map$chr ) %in% chr_number )
+#   
+#   , "The 'coord' column in the EWAS map file must be a numeric." =
+#     is.numeric( map$coord ) 
+#   , "The 'coord' column in the EWAS map file must contain whole numbers only." =
+#     int_test_vec( map$coord )
+#   
+#   , "The provided EWAS map file does not contain coordinates from the specified chromosome." =
+#     all( map$chr)
+#   )
+# 
+# # Check if the map file contains only unique combinations of probe_id, chr and
+# # coord and that it only  contains unique combinations of chr and coord (i.e. no
+# # duplicate loci)
+# # This is important as we do not want future joins to result in multiple rows
+# # per probe_id.
+# n_unique_rows <- map %>% distinct( ) %>% nrow()
+# n_unique_loci <- map %>% select( chr, coord ) %>% distinct() %>% nrow()
+# 
+# stopifnot(
+#   "Every row in the EWAS map file must contain a unique combination of probe_id, chr and coord!" =
+#     n_unique_rows == nrow( map )
+#   , "This data frame contains duplicate loci (i.e. not all combinations of 'chr' + 'coord' are unique)." =
+#     n_unique_loci == nrow( map )
+# )
+
+# Ensure that the map data frame only contains rows where chr = chr_number
+if( length(unique(map$chr)) > 1 ){
+  warning( ewas_map_file_name, ".feather", " contains probes from "
+           , length(unique(map$chr)), " different chromosomes.\n"
+           , "Removing probes from other chromosomes than chr "
+           , chr_number, "..." )
+  warning( "Removing ", map %>% filter( chr != chr_number ) %>% nrow()
+           , " rows..." )
+  map %<>% filter( chr == chr_number )
+  warning( nrow(map), " probes remaining.\n")
+}
+```
+
+
+## EWAS data from 0101
+
+```{r}
+ewas <- HaplinMethyl::envDataLoad( 
+  filename =  ewas_fileset_name
+  , dir.in = ewas_fileset_dir
+)
+invisible( gc() ) # garbage collection
+# typeof( ewas ); class( ewas )
+# length( ewas )
+HaplinMethyl::nrows( ewas )
+HaplinMethyl::ncolumns( ewas )
+
+# Row names = CpG IDs
+dimnames(ewas[[1]])[[1]] %>% head()
+n_unique_probes <- dimnames(ewas[[1]])[[1]] %>% unique() %>% length() 
+
+message( "EWAS data contains "
+         , prettyNum( HaplinMethyl::nrows( ewas ), big.mark = "," )
+         , " probe IDs and "
+         , prettyNum( n_unique_probes, big.mark = "," )
+         , " unique probes IDs." 
+)
+
+# Extra safety valve for discovering cases of duplicate probe IDs (should be
+# taken care of in 0101)
+stopifnot( "The EWAS data must not contain duplicate probe IDs." =
+         HaplinMethyl::nrows( ewas ) == n_unique_probes    
+)
+```
+
+
+# Identify the probes to extract
+
+Probes to extract = the intersection of  
+  
+* probe IDs in the EWAS map data frame, and  
+  
+* probe IDs in the EWAS fileset.
+
+
+```{r}
+ewas_probes <- dimnames(ewas[[1]])[[1]] # row names using ff 
+# ewas_probes <- summary(ewas, short = FALSE )$rownames 
+# (same thing, but using HaplinMethyl)
+
+probes_keep <- base::intersect( map$probe_id, ewas_probes )
+
+message( 
+  "Intersection between the probe IDs in the EWAS fileset and "
+  , "the map data frame consists of "
+  , prettyNum( length( probes_keep ) , big.mark = "," )
+  , " probes.\n"
+  , "There are ", length( base::setdiff(  map$probe_id, probes_keep ) )
+  , " probes in the map data frame that do not have a matching ID in the EWAS"
+  , " fileset.\n"
+  , "Extracting " 
+  , prettyNum(length( probes_keep ), big.mark = "," )
+  , " from the EWAS fileset. Discarding "
+  , prettyNum( length( ewas_probes ) - length( probes_keep ), big.mark = "," ) 
+  , " probes."
+  )
+
+# Export the "final" map data frame to document the map file used to find the
+# probes to extract from the EWAS data. Add a column indicating whether probe_ID
+# is present in the EWAS fileset:
+map %<>% 
+  mutate( present_in_ewas_fileset = probe_id %in% ewas_probes )
+
+map %>%
+  head() %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+map %>%
+  count( present_in_ewas_fileset ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+feather::write_feather( 
+  map
+  , path = file.path( stage_dir,
+                      paste0( stage_dir, "_utilised_ewas_map.feather" ) )
+)
+```
+
+
+# Extract probes from EWAS data
+
+Extract the probes from EWAS data that have a matching probe ID in the ewas map file provided, and are on chromosome `r chr_number` according to the map file.  
+  
+Export subsetted fileset using `HaplinMethyl::envDataSubset()`.
+
+```{r}
+ewas_subset <- HaplinMethyl::envDataSubset(
+  ewas
+  , row.names = probes_keep
+  , file.out = "0301_ewas"
+  , dir.out = stage_dir
+  , overwrite = TRUE
+)
+invisible( gc() ) # garbage collection
+dim(ewas_subset[[1]])
+
+# Some logical checks:
+# All of the probeIDs in ewas_subset are present in probes_keep:
+stopifnot( identical( dimnames(ewas_subset[[1]])[[1]], probes_keep ) )
+```
+
+
+
+# Check the exported EWAS fileset 
+
+(For development purposes. Will not be part of final pipeline code.)
+
+```{r}
+# Check that the _exported_ fileset has the correct dimensions and that all of
+# the probe IDs match the final map data frame:
+ewas_subset_exported <- HaplinMethyl::envDataLoad( 
+  filename =  "0301_ewas"
+  , dir.in = stage_dir
+)
+invisible( gc() ) # garbage collection
+
+# Compare dimensions of subsetted EWAS data and the EWAS data that was actually
+# exported:
+stopifnot(
+  "Exported EWAS data has different number of rows from subsetted EWAS data" =
+    identical( HaplinMethyl::nrows(ewas_subset_exported)
+               , HaplinMethyl::nrows(ewas_subset))
+)
+stopifnot(
+  "Exported EWAS data has different number of columns from subsetted EWAS data" =
+    identical( HaplinMethyl::ncolumns(ewas_subset_exported)
+               , HaplinMethyl::ncolumns(ewas_subset) )
+)
+
+# Check that the exported fileset only contains probes in the final ewas map
+# data frame and are on this chromosome:
+stopifnot( identical( dimnames(ewas_subset_exported[[1]])[[1]]
+           , dimnames(ewas_subset[[1]])[[1]] ) )
+map %<>% 
+  mutate( present_in_exported_ewas_fileset = 
+            probe_id %in% dimnames(ewas_subset_exported[[1]])[[1]]
+  )
+
+map %>%
+  count( present_in_ewas_fileset, present_in_exported_ewas_fileset ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+```
+
+
+
+# Create probe list
+
+Use the newly exported EWAS fileset to generate a list with all the IDs of the probes on this chromosome that will be annotated in the next stage (0401). Use the provided EWAS map file to add a column with the genomic coordinate of the probe (specifically, the coordinate of the cytosine base). Export the resulting data frame with to the stage directory for later use.
+
+## Import EWAS map file
+
+(Start again fresh for readability purposes)
+
+### File metadata
+
+```{r}
+# map file:
+metadata <- file.info(
+  file.path( root_dir, ewas_map_file_name )
+  , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+```
+
+### Import map file
+
+```{r}
+map <- feather::read_feather( 
+  file.path( root_dir, ewas_map_file_name )
+)
+invisible( gc() ) # garbage collection
+
+dim(map)
+head(map) %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+map %>%
+  summarise( n(), n_distinct(probe_id), unique(chr), n_distinct(chr, coord)) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+```
+
+
+
+## Create probe list
+
+```{r}
+# Use the newly exported EWAS fileset to create df with probe ID and chr:
+probe_list <- data.frame(
+  probe_id = dimnames(ewas_subset_exported[[1]])[[1]]
+  , probe_chr = chr_number
+)
+
+dim(probe_list)
+head(probe_list) %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+# Add genomic coordinates from map file:
+probe_list %<>% 
+  dplyr::left_join( . , map, by = c( "probe_id", "probe_chr" = "chr") )
+dim(probe_list)
+
+head(probe_list) %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+probe_list %>% 
+  summarise( n()
+             , unique( probe_chr )
+             , n_distinct( probe_id )
+             , n_distinct( coord )
+             , n_distinct( probe_id, coord ) 
+  ) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+```
+
+
+## Check resulting probe list data with coordinates
+
+```{r}
+# At this stage, all the probe_ids should have a coordinate, i.e. coord should
+# not be NA in any of the rows. If this happens, then something is probably
+# wrong with the map file.
+
+# Stop if there are NAs in coord column:
+stopifnot( 
+  "There are EWAS probes whose IDs and chromosome number do not have a match in the provided EWAS map file. Please ensure that all the probes in your EWAS fileset are also present in the EWAS map file, and that you have specified the correct chromosome, and try again." =
+    all( !is.na( probe_list$coord) )
+)
+
+# Stop if not all the probes are located on the same chromosome:
+stopifnot( 
+  "All the EWAS probes currently being studied must be located on the same chromosome. Combining data from the EWAS map file with the list of probes remaining after QC results in more than one unique value of 'probe_chr'. Please inspect your EWAS map file and EWAS fileset." =
+    length( unique( probe_list$probe_chr) ) == 1
+)
+
+# Stop if there are duplicates of the coordinates:
+stopifnot( 
+  "Adding coordinates from the EWAS map file to the list with EWAS probes with dplyr::left_join() resulted in rows with duplicate coordinates. Please ensure that all the probes in your EWAS map file and EWAS fileset are unique and try again." =
+     (probe_list %>% select( probe_chr, coord ) %>% distinct() %>% nrow()) == 
+    nrow( probe_list)
+)
+
+# Stop if there are duplicates of the probe IDs:
+# (this should not occur if the checks in 0101 have been run prior to this)
+stopifnot( 
+  "There are duplicate probe IDs among the probes that survived the QC. Please ensure that all the probes in your EWAS map file (and EWAS fileset) are unique, then try again." =
+     (probe_list$probe_id %>% unique() %>% length()) == 
+    nrow( probe_list)
+)
+```
+
+
+## Rename columns
+
+```{r}
+# Change name of 'coord' to 'probe_coord':
+probe_list %<>% dplyr::rename( "probe_coord" = coord )
+  
+probe_list %>% 
+  head() %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+```
+
+
+## Summary of probe list
+
+```{r}
+message( "Probe list creation complete.\nThe list of probes contains "
+         , nrow(probe_list) # we've checked for duplicates
+         , " unique probes located on chromosome "
+         , probe_list$probe_chr %>% unique() %>% paste( sep = ", ")
+         , ".\nExporting probe list..."
+)
+```
+
+
+
+## Export probe list
+
+```{r}
+feather::write_feather( probe_list, path = ewas_probe_list_path )
+```
+
+
+## Metadata for exported probe list
+
+```{r}
+metadata <- file.info( ewas_probe_list_path, extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "`probe_list` metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```

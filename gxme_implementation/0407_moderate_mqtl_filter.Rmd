@@ -1,0 +1,2742 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: yes
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # chr_number: 18
+  chr_number: 18
+  
+  # ROOT DIRECTORY
+  # (root_dir = the chromosome subdirectory)
+  # root_dir: "C:/Temp/edj079/2024-05-17_pipeline_dir/chromosomes/Chr18"
+  root_dir: "C:/Temp/edj079/2025-03-24_pipeline_dir/chromosomes/Chr18"
+  
+  # SNP list file:
+  # # snp_list_path: "0406/0406_snp_list.feather" # WRONG! Contains fewer SNPs
+  # # which can lead to some mQTLs-by-association not being identified 
+  # snp_list_path: "0202/0202_snp_list.feather" # "hard-code" 0202 snp list
+  
+  # LD SNPs from 0202:
+  # ld_snps_path: "0202/0202_mqtl_ld_snps.feather" # "hard-code" 0202 ld snps
+  
+  # STATE LOCUS x SNP DATA FRAME FROM 0406:
+  # sl_snp_path: "0406/0406_snp_state_loci.feather" # "hard-code" sl x snp pairs
+  
+  # STATE LOCUS x EWAS PROBE DATA FRAME FROM 0406:
+  # sl_ewas_probe_path: "0406/0406_scheme_probes.feather" # "hard-code" probe list
+  
+  # MQTL FILE
+  mqtl_file_name: "_0009_godmc_mqtl_associations_hg19_chr18.feather"
+  
+  # MQTL LD LOWER LIMIT FOR R2
+  mqtl_ld_r2: 0.9
+
+  stage_dir: "0407"
+title: "`r paste0('Perform **Moderate** mQTL Filtering - Chromosome ', params$chr_number, ', and mqtl_ld_r2 = ', params$mqtl_ld_r2 )`"
+---
+
+```{r eval=FALSE}
+# DEV:
+setwd(params$root_dir)
+```
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Chromosome `r params$chr_number`
+
+
+
+# Parameters
+
+## Make parameters into variables
+
+The pipeline might not end up being Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# "hard-code" 0202 snp list
+snp_list_path <- file.path( "0202", "0202_snp_list.feather" )
+# "hard-code" 0202 ld snps
+ld_snps_path <- file.path( "0202", "0202_mqtl_ld_snps.feather" )
+# "hard-code" sl x snp pairs
+sl_snp_path <- file.path( "0406", "0406_snp_state_loci.feather" )
+# "hard-code" probe list
+sl_ewas_probe_path <- file.path( "0406", "0406_scheme_probes.feather" )
+
+
+# MQTL:
+mqtl_file_name <- params$mqtl_file_name 
+
+# DETERMINE PATH TO THE MQTL FILE
+mqtl_file_path <- file.path( root_dir, mqtl_file_name )
+
+# Stage dir
+stage_dir <- params$stage_dir
+
+# Create the paths for the produced data:
+all_snp_ewas_probe_pairings_path <- file.path(
+  stage_dir, paste0( stage_dir
+                     , "_all_snp_ewas_probe_pairings_with_status.feather" )
+)
+
+updated_snp_sl_pairings_path <- 
+  file.path( stage_dir, paste0( stage_dir, "_snp_state_loci.feather" ) )
+
+updated_all_scheme_probes_path <- 
+  file.path( stage_dir, paste0( stage_dir, "_scheme_probes.feather" ) )
+
+updated_snp_list_path <- 
+  file.path( stage_dir, paste0( stage_dir, "_snp_list.feather" ) )
+
+excluded_ewas_probes_path <-
+  file.path( stage_dir
+             , paste0( stage_dir, "_ewas_probes_removed_by_mqtl_filter.tsv" )
+  )
+
+excluded_snps_path <-
+  file.path( stage_dir
+             , paste0( stage_dir, "_snps_removed_by_moderate_mqtl_filter.tsv" )
+  )
+```
+
+## Print parameters
+
+**Chromosome:** `r chr_number`  
+**snp_list_path:** `r snp_list_path`  
+**ld_snps_path:** `r ld_snps_path`  
+**sl_snp_path:** `r sl_snp_path`  
+**sl_ewas_probe_path:** `r sl_ewas_probe_path`  
+**mqtl_file_name:** `r mqtl_file_name`  
+**mqtl_file_path:** `r mqtl_file_path`  
+**mqtl_ld_r2:** `r params$mqtl_ld_r2`  
+**all_snp_ewas_probe_pairings_path:** `r all_snp_ewas_probe_pairings_path`  
+**updated_snp_list_path:** `r updated_snp_list_path`  
+
+
+# Create stage directory for output
+
+(This stage dir is not meant to be used in the pipeline itself; this is just a preliminary test to survey how different mQTL filtering protocols affect the number of SNPs we are left with after 0407.)
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+      
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+        
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+  
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+
+- `r snp_list_path` - The SNP list from 0406 (probeless SNPs have been removed)  
+
+- `r sl_snp_path` - The SNP x state locus pairings from 0406 (the SNPs were paired with SLs that contain one or more scheme-assigned EWAS probes that were within the cut-off distance of the SNP).  
+
+- 
+
+
+## Files produced by this script
+
+- `r all_snp_ewas_probe_pairings_path` - A data frame with all the SNP x state locus x EWAS probe pairings from 0406, but with columns indicating whether we keep the pairing or exclude it, and whether it was categorised as an mQTL or an "mQTL-by-association".  
+
+- `r updated_snp_sl_pairings_path` - An updated version of the data frame with all the SNP x state locus pairings from 0406, where any mQTL or an "mQTL-by-association" pairings have been removed.  
+
+-   `r snp_list_path` - The updated version of `r snp_list_path` containing only SNPs that survived the strict mQTL filter. 
+
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  , warning = FALSE # hide warnings
+  # , message = TRUE # hide messages
+  , message = FALSE 
+)
+options( scipen = 6 )
+```
+
+
+## Packages
+
+```{r}
+library(dplyr)
+library(feather)
+library(magrittr)
+library(gt)
+library(tidyr)
+```
+
+
+# Import mQTL data (user-provided data frame with flagged SNP-CpG combinations)
+
+## File metadata
+
+```{r}
+if( file.exists(mqtl_file_path) == FALSE ){
+  stop( "No file found at `mqtl_file_path` = "
+        , mqtl_file_path
+        , ". mqtl_file_path = file.path( root_dir, mqtl_file_name), where "
+        , "root_dir = \"", root_dir, "\", and mqtl_file_name = "
+        , "\"", mqtl_file_name, "\""
+  ) }
+
+metadata <- file.info( mqtl_file_path
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+rm(metadata)
+```
+
+
+## Import `r mqtl_file_name`
+
+```{r}
+mqtls <- feather::read_feather( mqtl_file_path )
+invisible( gc() )
+
+mqtls %>% dim()
+mqtls %>% head()
+
+# Convert to data.table:
+data.table::is.data.table(mqtls)
+data.table::setDT(mqtls)
+data.table::is.data.table(mqtls)
+
+# Stop if file contains wrong chromosome:
+stopifnot(
+  "The feather file in 'mqtl_file_path' contains the wrong chromosome!" =
+    unique( mqtls$snp_chr ) == chr_number
+)
+
+# Issue warning if user-provided mqtl data frame contains duplicate rows and
+# keep only distinct rows:
+if( ( mqtls %>% distinct() %>% nrow() ) < ( mqtls %>% nrow() ) ){
+  warning( "Contains duplicate rows:\n", mqtl_file_path
+           , ".\n These rows will be removed.")
+  # Get rid of duplicate rows:
+  mqtls %<>% distinct()
+}
+
+# 'mqtls' is now ready for use.
+mqtls %>% dim()
+mqtls %>%
+  head() %>% 
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>%
+  tab_options( table.font.size = "x-small")
+
+mqtls %>% 
+  summarise( n()
+             , n_distinct(snp_chr, snp_coord, cpg)
+             , n_distinct(snp_chr, snp_coord)
+             , unique(snp_chr) ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small" )
+```
+
+
+# Import SNP list from 0202
+
+We will use the SNP list to add SNP ID to the mQTL data so that we can link the mQTL data to the mQTL LD SNP data from 0202, the SNP x state locus pairings etc. 
+Use the SNP list from 0202 so that we don't miss any mQTLs-by-association.  
+  
+**Example:**  
+SNP1 and SNP2 are in high LD. SNP1 was paired with at a nearby scheme-assigned EWAS probe, cg1, during 0406, but SNP2 was not. 
+The cg1 EWAS probe was just within the cut-off limit from SNP1 and just outside SNP2's cut-off limit. SNP2 is therefore not in the SNP list from 0406. 
+SNP2 is in an mQTL pair with cg1 according to our mQTL file, but SNP1 is not. However, since SNP1 and SNP2 are in high LD, SNP1 is in an mQTL-by-association pair with cg1. 
+If we use the SNP list from 0406, then adding SNP IDs to the mQTL data by joining the the SNP list and the mQTL data using SNP chromosome and coordinate as a key, SNP2 will not be linked together with its row(s) in the mQTL data. 
+This in turn will lead to SNP2 not being identified as an mQTL SNP, and subsequently SNP1 will not be identified as an mQTL-by-association SNP.  
+
+
+## File metadata
+
+```{r}
+# SNP list from 0406:
+metadata <- file.info( file.path(root_dir, snp_list_path)
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+rm(metadata)
+```
+
+## Import `r snp_list_path` 
+
+```{r}
+snp_list <- feather::read_feather( file.path(root_dir, snp_list_path ) )
+
+# Convert to data.table:
+data.table::is.data.table(snp_list)
+data.table::setDT(snp_list)
+data.table::is.data.table(snp_list)
+
+
+snp_list %>% dim()
+snp_list %>%
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer( snp_coord ) %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Glance at `snp_list`" ))
+
+snp_list %>%
+  summarise( n(), n_distinct(snp)) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  tab_header( title = md( "`snp_list` Summary" ))
+```
+
+
+<!-- ## TEST DATA -->
+
+<!-- Test out different scenarios in terms of SNPs. (`eval=FALSE` and `include=FALSE`; Comment out code when not testing/developing.) -->
+
+<!-- ```{r eval=FALSE, include=FALSE} -->
+<!-- # # Create SNP list with two SNPs with different ID, but identical locus: -->
+<!-- #  -->
+<!-- # # Add a copy of an already existing row, but where the SNP ID has been altered: -->
+<!-- # snp_list %<>%  -->
+<!-- #   slice_sample(n=1) %>%  -->
+<!-- #   mutate( snp = "RS1234" ) %>%  -->
+<!-- #   dplyr::bind_rows( . , snp_list ) -->
+<!-- #  -->
+<!-- # snp_list %>% add_count(snp_chr, snp_coord) %>% filter(n > 1) -->
+<!-- # snps_duplicate_loci <- snp_list %>% add_count(snp_chr, snp_coord) %>% -->
+<!-- #   filter(n > 1) %>% pull(snp) -->
+<!-- ``` -->
+
+
+
+# Add SNP list data to mQTL data
+
+As a test to check that the SNP list and mQTL file contain the same SNP ID - SNP coordinate key, and so that we can remove rows from mQTLs that contain SNPs that are not in our SNP list any more, or that were never among the SNPs in our data to begin with.
+
+```{r}
+mqtls %>% dim()
+mqtls
+
+mqtls %>% summarise( n()
+                     , n_distinct(cpg)
+                     , n_distinct(snp_chr)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtls` Summary - Before adding SNP ID" ))
+
+# Add snp ID to mqtls using chr and coord as keys
+mqtls %<>% dplyr::left_join(
+  . , snp_list %>% mutate( is_in_snp_list = TRUE )
+  , by = c("snp_chr", "snp_coord", "snp" ) ) %>% 
+  # Reorder columns:
+  select( snp, snp_chr, snp_coord, cpg, is_in_snp_list )
+invisible( gc() )
+
+mqtls %>% dim()
+mqtls
+
+
+mqtls %>% 
+  count( is_in_snp_list ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtls` - Flagged association pairs with/without SNPs
+                          that are in the SNP list" ))
+
+mqtls %>% summarise( n()
+                     , unique(snp_chr)
+                     , n_distinct(snp, cpg)
+                     , n_distinct(cpg)
+                     , n_distinct(snp)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, snp)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+                     , sum(is.na(snp))
+                     , sum(!is.na(is_in_snp_list))
+                     , sum(is.na(is_in_snp_list))
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtls` Summary" ))
+
+# Issue a warning if there are SNPs in mqtls with identical genomic coordinates
+# due to multiple SNP IDs being mapped to the same coordinates:
+if(
+ ( mqtls %>%
+     distinct( snp, snp_chr, snp_coord, cpg ) %>%
+     nrow() ) > 
+   ( mqtls %>%
+       distinct( snp_chr, snp_coord, cpg ) %>%
+       nrow() )
+# These numbers should be identical if there is only one row per unique
+# combination of SNP coordinate and cpg.
+){
+  warning(
+    "There are SNPs in the mQTL file that have identical genomic coordinates!"
+    , "I.e., there is not only one SNP ID per genomic coordinates."
+    , "
+    Users who find this concerning should review their files with provided "
+    , "flagged mQTL association pairs and their .bim files."
+    )
+}
+```
+
+
+# Remove rows in `mqtls` with SNPs that are not present in the SNP list
+
+The mQTL pairs in `mqtls` where the SNP ID and genomic coordinate does not have a match in the SNP list, are not of any use to us. We need to be able to connect the SNP in an mQTL pair with either  
+
+1) a SNP in a SNP x SL pairing, or
+2) a SNP in high LD with another SNP that is in a SNP x SL pairing.
+
+If `is_in_snp_list = NA`, then the mQTL pair cannot be directly or indirectly connected with our SNP x SL (or SNP x EWAS probe) pairings.
+
+
+```{r}
+mqtls %>% summarise( n()
+                     , n_distinct(snp, cpg)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+                     , sum(!is.na(is_in_snp_list))
+                     , sum(is.na(is_in_snp_list))
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtls` Before removing rows without SNP ID" ))
+
+
+# Remove mqtl associations without SNP ID
+# I.e. remove rows from mqtls with SNP chromosome and coordinate that does not
+# match any of the SNPs in our SNP list from 0202.
+dim(mqtls)
+mqtls %<>% filter( !is.na( is_in_snp_list ) )
+dim(mqtls)
+invisible( gc() )
+
+
+mqtls %>% summarise( n()
+                     , n_distinct(snp, cpg)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+                     , sum(is.na(snp))
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtls` After removing rows without SNP ID" ))
+```
+
+
+
+# Import state locus x EWAS probe pairings from 0406
+
+## File metadata
+
+```{r}
+# SL x EWAS probe pairings from 0406:
+metadata <- file.info( file.path(root_dir, sl_ewas_probe_path)
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+rm(metadata)
+```
+
+## Import `r sl_ewas_probe_path` 
+
+```{r}
+sl_ewas_probe <- feather::read_feather( 
+  file.path( root_dir, sl_ewas_probe_path )
+)
+dim(sl_ewas_probe)
+
+# Convert to data.table:
+data.table::is.data.table(sl_ewas_probe)
+data.table::setDT(sl_ewas_probe)
+data.table::is.data.table(sl_ewas_probe)
+
+
+head(sl_ewas_probe) %>% 
+  gt::gt() %>%
+  fmt_integer( probe_coord ) %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    paste0( "Glance at `sl_ewas_probe` (", sl_ewas_probe_path, ")")) )
+
+sl_ewas_probe %>% 
+  summarise( n()
+             , n_distinct(probe_id)
+             , n_distinct(probe_id, scheme)
+             , n_distinct(probe_id, state_locus)
+             , n_distinct(state_locus)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    paste0( "Summary of `sl_ewas_probe` (", sl_ewas_probe_path, ")" )
+  ) )
+invisible( gc() )
+```
+
+
+# Import state locus x SNP pairings from 0406
+
+## File metadata
+
+```{r}
+# SL x EWAS probe pairings from 0406:
+metadata <- file.info( file.path(root_dir, sl_snp_path)
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+rm(metadata)
+```
+
+## Import `r sl_snp_path` 
+
+```{r}
+sl_snp <- feather::read_feather( 
+  file.path( root_dir, sl_snp_path )
+)
+dim(sl_snp)
+
+# Convert to data.table:
+data.table::is.data.table(sl_snp)
+data.table::setDT(sl_snp)
+data.table::is.data.table(sl_snp)
+
+head(sl_snp) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Glance at `sl_snp` (", sl_snp_path, ")" )) )
+
+sl_snp %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(snp, scheme)
+             , n_distinct(snp, state_locus)
+             , n_distinct(state_locus)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Summary of `sl_snp` (", sl_snp_path, ")" )) )
+
+invisible( gc() )
+```
+
+
+# Pairings from 0406 **prior to mQTL filtering** (SNP x SL and EWAS probe x SL)
+
+Make a df with all the SNP x EWAS probe pairings from 0406 by combining `sl_ewas_probe` and `sl_snp`.
+
+```{r}
+# MAKE A DF WITH ALL THE SNP x EWAS PROBE PAIRINGS FROM 0406 BY COMBINING
+# SL_EWAS_PROBE and SL_SNP
+sl_ewas_probe %>% dim()
+sl_snp %>% dim()
+
+snp_x_ewas_probe <- dplyr::left_join(
+  sl_ewas_probe %>% distinct(scheme, probe_id, state_locus )
+  , sl_snp 
+  , by = c("state_locus", "scheme" )
+  , relationship = "many-to-many"
+) %>% 
+  # Reorder 
+  select( scheme, snp, state_locus, probe_id )
+
+# Convert to data.table:
+data.table::setDT( snp_x_ewas_probe )
+
+# Summary of df with all SNP x EWAS probe pairings:
+snp_x_ewas_probe %>% 
+  summarise( n()
+             , n_distinct(state_locus)
+             , n_distinct(snp)
+             , n_distinct(snp, scheme)
+             , n_distinct(snp, state_locus)
+             , n_distinct(snp, state_locus, probe_id)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `snp_x_ewas_probe`") )
+```
+
+
+## SNP x EWAS probe pairings **prior to mQTL filtering**
+
+```{r}
+# SNP x EWAS probe pairings in total
+snp_x_ewas_probe %>%
+  summarise( "SNP x EWAS probe pairings in total from 0406" = n() ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+
+# SNP x EWAS probe pairings per scheme:
+snp_x_ewas_probe %>% 
+  count( scheme ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = "SNP x EWAS probe pairings per scheme" )
+```
+
+
+## SNP x SL pairings **prior to mQTL filtering**
+
+```{r}
+# SNP x SL probe pairings in total
+snp_x_ewas_probe %>%
+  distinct( snp, state_locus, scheme ) %>% 
+  summarise( "SNP x SL pairings in total from 0406" = n() ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+
+# SNP x SL probe pairings per scheme:
+snp_x_ewas_probe %>% 
+  distinct( snp, state_locus, scheme ) %>% 
+  count( scheme ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = "SNP x SL pairings per scheme" )
+```
+
+
+
+
+# Remove rows in `mqtls` with CpGs that do not belong to a state locus that was paired with a SNP during 0406 
+
+If an mQTL pair in `mqtls` contains an EWAS probe belonging to a state locus that **was not** paired with any SNPs during 0406, then the pair cannot be classified as an mQTL or an mQTL-by-association. Hence, we keep only rows in `mqtls` where `cpg` contains an EWAS probe that belongs to one of the state loci in the SNP x SL file (`sl_snp_path`).
+
+```{r}
+mqtls %>% summarise( n()
+                     , n_distinct(snp, cpg)
+                     , n_distinct(cpg)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+                     , sum(is.na(snp))
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0(
+    "`mqtls` Before removing rows where the cpg does not belong to a "
+    , "scheme-assigned state locus" )
+  ))
+
+# Remove rows from mqtls belonging to cpgs that are not in a state locus that
+# was paired together with a SNP in 0406:
+mqtls %<>% filter( cpg %in% ( sl_ewas_probe %>%
+                                filter( state_locus %in% sl_snp$state_locus ) %>%
+                                pull( probe_id ) )
+) 
+
+mqtls %>% summarise( n()
+                     , n_distinct(snp, cpg)
+                     , n_distinct(cpg)
+                     , n_distinct(snp_chr, snp_coord)
+                     , n_distinct(snp_chr, snp_coord, cpg)
+                     , sum(is.na(snp))
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0(
+    "`mqtls` **After** removing rows where the cpg does not belong to a "
+    , "scheme-assigned state locus" )
+  ))
+
+
+# Warning if none of the EWAS probes/CpGs in mqtls have IDs matching the EWAS
+# probes that were paired with a SNP in 0406:
+if( mqtls %>% nrow() == 0 ){
+  warning( 
+    "There are no mQTL associations where 1) the SNP has matching coordinates "
+    , "in the SNP list, and 2) the 'cpg' matches any of the IDs of the "
+    , "scheme-assigned EWAS probes that were paired together with at least one "
+    , "SNP in 0406."
+    , "\nThe mQTL-filtering will therefore not be performed. "
+  )
+}
+
+# If zero rows left in mqtls, update indicator variable stating whether
+# mQTL-filtering should be skipped:
+skip_mqtl_filtering <- FALSE
+if( mqtls %>% nrow() == 0 ){ skip_mqtl_filtering <- TRUE }
+```
+
+
+## If zero mQTL associations left, skip filtering and export files to stage directory
+
+```{r}
+if( skip_mqtl_filtering == TRUE ){
+  message( "Skipping mQTL filtering.\n"
+           , "Copying SNP list and SNP x state locus data frame from previous "
+           , "stage to stage directory...")
+  
+  
+  # 1) COPY SNP LIST FROM 0406 TO STAGE DIRECTORY:
+  
+  # The "from" path:
+  from_path <-  file.path( "0406", "0406_snp_list.feather" )
+  
+  # The "to" path:
+  to_path <- file.path( root_dir, updated_snp_list_path )
+  
+  # Copy file to the stage directory:
+  file.copy( from = from_path
+             , to = to_path
+             , overwrite = TRUE
+             , copy.date = TRUE # preserve dates if possible
+  )
+  
+  stopifnot( 
+    "Copying SNP list to the stage directory was not successful." =
+      file.exists( to_path )
+  )
+  message( snp_list_path, " copied to ", updated_snp_list_path )
+  
+  # 2) COPY SNP x SL PAIRINGS FROM 0406 TO STAGE DIRECTORY:
+  
+  # The "from" path:
+  from_path <- file.path( root_dir, sl_snp_path )
+  
+  # The "to" path:
+  to_path <- file.path( root_dir, updated_snp_sl_pairings_path )
+  
+  # Copy file to the stage directory:
+  file.copy( from = from_path
+             , to = to_path
+             , overwrite = TRUE
+             , copy.date = TRUE # preserve dates if possible
+  )
+  
+  stopifnot( 
+    "Copying file with SNP x SL pairings to the stage directory was not successful." =
+      file.exists( to_path )
+  )
+  message( sl_snp_path, " copied to ", updated_snp_sl_pairings_path )
+  
+  # 3) CREATE AN VERSION OF all_snp_x_ewas_probe_pairings THAT DOES NOT HAVE ANY
+  # PAIRINGS THAT HAVE BEEN REMOVED BY MQTL FILTER
+  # Normally, when there are mQTLs to filter out, all_snp_x_ewas_probe_pairings
+  # would have been created by joining mqtl_by_assoc and snp_x_ewas_probe. Since
+  # there are no mQTL pairs to work with here, we will just use snp_x_ewas_probe
+  all_snp_x_ewas_probe_pairings <- snp_x_ewas_probe %>% 
+    mutate( culprit_snp = NA
+            , snp_ewas_probe_mqtl_status = "keep"
+            , snp_sl_mqtl_status = "keep"
+    ) %>%
+    select( scheme
+            , snp
+            , culprit_snp
+            , state_locus
+            , probe_id
+            , snp_ewas_probe_mqtl_status
+            , snp_sl_mqtl_status)
+  # Export:
+  all_snp_x_ewas_probe_pairings %>% 
+    feather::write_feather( all_snp_ewas_probe_pairings_path )
+  message( "all_snp_x_ewas_probe_pairings exported to "
+           , all_snp_ewas_probe_pairings_path )
+  
+  
+  # 4) EXPORT LIST OF EWAS PROBE x SL PAIRINGS FROM 0406 TO
+  # updated_all_scheme_probes_path
+  
+  # Export:
+  sl_ewas_probe %>% feather::write_feather( updated_all_scheme_probes_path )
+  # (sl_ewas_probe contains the PROBE x SL pairings from 0406 and is already in
+  # the same format as the file that would have been exported later in this
+  # script had there been executed mQTL filtering )
+  message( "List of EWAS probe x SL pairings from 0406 exported to "
+           , updated_all_scheme_probes_path )
+
+
+  # 5) CREATE AN EMPTY VERSION OF excluded_ewas_probes AND EXPORT TO
+  # excluded_ewas_probes_path
+  excluded_ewas_probes <- data.frame( probe_id = character()
+                                      , exclusion_reason = character() )
+  # Export:
+  excluded_ewas_probes %>% readr::write_tsv( .
+                                             , file = excluded_ewas_probes_path
+                                             , col_names = TRUE
+  )
+  message("No EWAS probes filtered by mQTL filter. Empty data frame exported to "
+           , excluded_ewas_probes_path )
+  
+  # 6) CREATE AN EMPTY VERSION OF excluded_snps AND EXPORT TO
+  # excluded_snps_path
+  excluded_snps <- data.frame( snp = character()
+                                      , exclusion_reason = character() )
+  # Export:
+  excluded_snps %>% readr::write_tsv( .
+                                      , file = excluded_snps_path
+                                      , col_names = TRUE
+  )
+  message( "No SNPs filtered by mQTL filter. Empty data frame exported to "
+           , excluded_snps_path )
+  
+  # Break/stop knitting rmd:
+  knitr::knit_exit()
+}
+```
+
+
+# mQTLs
+
+Identify mQTLs among the SNP x EWAS probe pairings from 0406.  
+
+Let's find the mQTLs first - we'll focus on the mQTLs-by-association later.
+Use `snp_x_ewas_probe` from previous chunk.
+
+```{r}
+# Summary of snp_x_ewas_probe
+snp_x_ewas_probe %>% summarise( n()
+                                , n_distinct( snp )
+                                , n_distinct( probe_id )
+                                , n_distinct( snp, probe_id )
+                                , n_distinct( snp, probe_id, scheme )
+                                , n_distinct( snp, probe_id, state_locus )
+                                , n_distinct( snp, state_locus )
+                                , n_distinct( probe_id, scheme )
+) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `snp_x_ewas_probe`" ) )
+
+snp_x_ewas_probe %>%
+  head() %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(snp_x_ewas_probe)`" ) )
+
+# Check that all the rows in snp/cpg contain IDs:
+stopifnot(
+  all( !is.na(snp_x_ewas_probe$probe_id) ) | all( !is.na(snp_x_ewas_probe$snp) )
+)
+
+# Check that all the SNPs in the df is also present in the SNP list:
+stopifnot(
+    all( snp_x_ewas_probe$snp %in% snp_list$snp )
+)
+
+
+# IDENTIFY THE ROWS CONTAINING MQTL PAIRS BY USING mqtls AND LEFT JOIN 
+
+# Add column indicating whether the snp x ewas probe combination is in an mQTL
+dim(snp_x_ewas_probe)
+snp_x_ewas_probe %<>%
+  dplyr::left_join(
+    .
+    , mqtls %>% select( snp, cpg ) %>% mutate( mqtl_status = "mqtl")
+    , by = c("snp", "probe_id" = "cpg")
+    , relationship = "many-to-many" # in case some cpgs are in multiple schemes
+  )
+dim(snp_x_ewas_probe)
+
+snp_x_ewas_probe %>%
+  group_by( mqtl_status ) %>%
+  slice_sample(n = 3) %>%
+  ungroup() %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Random samples of `snp_x_ewas_probe`" ) )
+
+snp_x_ewas_probe %>%
+  count( mqtl_status ) %>%
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Number of mQTL SNP x EWAS probe pairings in `snp_x_ewas_probe`" ) )
+
+
+# Stop if there are any duplicate scheme x SNP x EWAS probe combinations:
+if( snp_x_ewas_probe %>% distinct( scheme, snp, probe_id ) %>% nrow() <
+    snp_x_ewas_probe %>% nrow() ){
+  duplicate_combos <- snp_x_ewas_probe %>%
+    dplyr::add_count( scheme, snp, probe_id ) %>% 
+    filter( n > 1 ) %>% 
+    distinct() %>% 
+    mutate( duplicates = paste0( scheme, ";", snp, ";", probe_id) ) %>% 
+    pull( duplicates )
+  
+  stop( "'snp_x_ewas_probe' has rows with the combination of "
+        ,"'scheme', 'snp' and 'probe_id'. "
+        , "There should only be one row per unique combination.\n"
+        , "Displaying up to 6 of the combinations with duplicates:  \n"
+        , paste(head(duplicates), collapse = "\n")
+  )
+}
+
+# Stop if snp_x_ewas_probe contains any rows with a scheme/snp/state_locus
+# combination that is not present in sl_snp:
+stopifnot(
+  0 == nrow( anti_join( 
+    snp_x_ewas_probe, sl_snp, by = c("scheme", "snp", "state_locus")
+  ) )
+)
+invisible( gc() )
+```
+
+
+
+# mQTL-by-association
+
+## Import `.tags.list` SNPs from 0202
+
+### File metadata
+
+```{r}
+# High mQTL LD SNPs from 0202:
+metadata <- file.info( file.path(root_dir, ld_snps_path)
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+rm(metadata)
+```
+
+### Import `r ld_snps_path` 
+
+```{r}
+ld_snps <- feather::read_feather(
+  file.path( root_dir, ld_snps_path )
+)
+dim(ld_snps)
+
+# Convert to data.table:
+data.table::is.data.table(ld_snps)
+data.table::setDT(ld_snps)
+data.table::is.data.table(ld_snps)
+
+ld_snps %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct(snp)
+             , n_distinct(snp, snp_coord)
+             , unique(snp_chr)
+             , n_distinct(snp, tags)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer( ) %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(ld_snps)`" ) )
+
+ld_snps %>%
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer( snp_coord ) %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(ld_snps)`" ) )
+
+ld_snps %>%
+  slice_sample(n=5) %>% 
+  gt::gt() %>%
+  fmt_integer( snp_coord ) %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Random sample of `ld_snps`" ) )
+```
+
+
+## Identify mQTL-by-association SNPs
+
+```{r results='asis'}
+# USE ld_snps TO IDENTIFY NON-MQTL SNPS IN THE DATA FROM 0406 THAT ARE IN HIGH
+# LD WITH AN MQTL SNP - I.E. MQTLS-BY-ASSOCIATION
+
+# 1) REMOVE ROWS IN ld_snps WHERE THE TARGET SNP IS NOT AN MQTL SNP
+ld_snps %>% dim()
+ld_snps %<>% filter( snp %in% mqtls$snp )
+ld_snps %>% dim()
+
+# The target SNPs in ld_snps are not necessarily listed in the mQTL data 
+# (It is for example possible that none of the target SNPs were paired together
+# with nearby scheme-assigned EWAS probes in 0406.) 
+# If this is the case, ld_snps now has zero rows and we want to skip the code
+# that identifies the mQTL-by-association SNPs.
+
+skip_identifying_mqtl_by_assoc <- FALSE
+if( nrow(ld_snps) == 0 ){
+  skip_identifying_mqtl_by_assoc <- TRUE
+  message("None of the of the mQTL SNPs are among the high LD SNPs from 0202.")
+}
+
+# 2) CREATE DATA FRAME WITH MQTL-BY-ASSOCIATION SNPS BY STARTING OFF WITH A LONG
+# FORMAT VERSION OF THE DATA FRAME WITH THE HIGH LD SNPS
+
+# Skip if zero target snps in ld_snps are listed in mqtl data
+if( skip_identifying_mqtl_by_assoc == FALSE ){
+  
+  # Convert ld_snps to long format by splitting the tags column. Then remove
+  # rows with a tag SNP that is an mQTL SNP:
+  mqtl_by_assoc <- ld_snps %>% 
+    # Remove the chr and coord of the target snps
+    select( -snp_chr, -snp_coord ) %>%
+    # # Number of "|" + 1 = number of tagging snps per target snp:
+    # mutate( n_tags = stringr::str_count(tags, "\\|") + 1 ) %>%
+    # Pivot longer - one row per tagging snp:
+    tidyr::separate_longer_delim( tags, "|" ) %>%
+    # Remove rows where tags contains a SNP id belonging to a SNP in mqtls
+    # (those SNPs are already considered to be mQTL so they can't be mqtl by
+    # association)
+    filter( !(tags %in% mqtls$snp) ) 
+  invisible( gc() )
+  
+  # We no longer need the tags.list data:
+  rm(ld_snps); invisible( gc() )
+  
+  # Print summary of data frame:
+  # (Use print() for the output to be printed in the Rmd report since we're
+  # inside an if statement)
+  print( 
+    mqtl_by_assoc %>% summarise( 
+      n()
+      , n_distinct(snp)
+      , n_distinct(snp, tags)
+    ) %>% 
+      gt::gt() %>%
+      fmt_integer() %>%
+      tab_options( table.font.size = "x-small" ) %>% 
+      tab_header( title = md(
+        "Summary of `mqtl_by_assoc` - 
+        Based on the `ld_snps` data frame converted to long format"))
+  )
+  print( 
+    mqtl_by_assoc %>%
+      head() %>% 
+      gt::gt() %>%
+      fmt_integer() %>%
+      tab_options( table.font.size = "x-small" ) %>% 
+      tab_header( title = md(
+        "`head(mqtl_by_assoc)` - 
+        Based on the `ld_snps` data frame converted to long format"))
+  )
+} else{
+  # CREATE AN EMPTY 'mqtl_by_assoc' DATA FRAME IF
+  # skip_identifying_mqtl_by_assoc == TRUE SO THAT WE DON'T HAVE TO USE MORE IF
+  # STATEMENTS WHEN PROCESSING MQTL-BY-ASSOCIATION DATA
+  mqtl_by_assoc <- data.frame( snp = character()
+                                    , tags = character()
+  )
+}
+
+
+# 3) MAKE CLEAR WHICH COLUMN CONTAINS THE POTENTIAL MQTL-BY-ASSOCIATION SNP AND
+# WHICH COLUMN CONTAINS "CULPRIT SNP"
+
+# Rename columns (the target SNP = the "culprit" SNP that implicates the
+# tagged SNP, the tags column is named "snp"):
+mqtl_by_assoc %<>% 
+  select( snp = tags, culprit_snp = snp ) #%>%
+
+# Summary of data frame:
+mqtl_by_assoc %>% summarise( 
+  n()
+  , n_distinct(snp)
+  , n_distinct(snp, culprit_snp)
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "`mqtl_by_assoc` - 
+        After renaming columns and adding coordinates of the implicated SNPs"))
+
+mqtl_by_assoc %>%
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "`head(mqtl_by_assoc)` - 
+        After renaming columns and adding coordinates of the implicated SNPs"))
+
+
+# 4) ENSURE THAT ANY SNPS IN 'mqtl_by_assoc' THAT ARE NOT PRESENT IN THE SNP
+# LIST FROM 0202 (THE GWAS QC STAGE) GET REMOVED
+
+# Remove any snps that are not present in the SNP list from 0406:
+mqtl_by_assoc %<>% 
+  filter( snp %in% snp_list$snp )
+
+# Summary of data frame:
+mqtl_by_assoc %>% summarise( 
+  n()
+  , n_distinct(snp)
+  , n_distinct(snp, culprit_snp)
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Summary of `mqtl_by_assoc` - 
+        After ensuring that there are no SNPs left that are not present in the 
+    SNP list from 0202"))
+
+mqtl_by_assoc %>%
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "`head(mqtl_by_assoc)` - 
+        After ensuring that there are no SNPs left that are not present in the 
+    SNP list from 0202"))
+
+# At this stage, all the SNPs in mqtl_by_assoc$snp should be present in
+# the SNP list from 0406
+
+# Number of SNPs implicated by each unique culprit SNP:
+mqtl_by_assoc %>%
+  add_count( culprit_snp ) %>%
+  select( culprit_snp, n ) %>%
+  distinct() %>%
+  filter( n > 1 ) %>%
+  arrange( desc(n) ) %>%
+  head(5) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` - The top \"heavy hitting\" culprit SNPs in terms
+  of the number of mqtl-by-association SNPs that they implicate"
+  ))
+
+# It is possible for one mqtl-by-association SNP to be "implicated" by more
+# than one "culprit" SNP:
+mqtl_by_assoc %>%
+  add_count( snp, name = "n_rows_per_implicated_snp" ) %>%
+  filter( n_rows_per_implicated_snp > 1 ) %>%
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+mqtl_by_assoc %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(snp, culprit_snp)
+  ) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "Summary of `mqtl_by_assoc` -
+  SNPs with duplicate rows due to being implicated by multiple \"culprit SNPs\""
+  ))
+# We want to keep the rows with duplicate IDs in the 'snp' column as the CpGs
+# connected to each culprit SNP can vary. We want to connect the implicated
+# mQTL-by-association SNP to all the CpGs that it is in an mQTL-by-association
+# relationship with.
+```
+
+
+## Connect mQTL-by-association SNPs with EWAS probes via their culprit SNP
+
+Some of the EWAS probes added to the mQTL-by-association SNPs will not result in a "proper" mQTL_by-association. 
+The `culprit_snp` SNP could have been paired with an EWAS probe during 0406 that the `snp` SNP was not paired with. In cases like this, there is no point in flagging the `snp` x `probe_id` combination as a mQTL-by-association since the combination is not present in our pairings from 0406.  
+
+
+```{r}
+# USE MQTLS IN snp_x_ewas_probe TO LINK THE MQTL-BY-ASSOCIATION SNPS IN
+# mqtl_by_assoc TO THE EWAS PROBES THEY'RE IN MQTL-BY-ASSOCIATION PAIRS WITH VIA
+# THEIR CULPRIT SNP(S)
+
+# Summary of mqtl_by_assoc *before* adding probe_id etc:
+mqtl_by_assoc %>%
+  head() %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "`head(mqtl_by_assoc)` -
+      **Before** adding `probe_id` and `pval` with join using `\"snp\" = 
+      \"culprit_snp\"`"
+  ))
+
+mqtl_by_assoc %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct( snp )
+             , "Number of rows with a SNP whose culprit SNP matches the ID 
+                 of an mQTL SNP" =
+               sum( culprit_snp %in% (snp_x_ewas_probe %>%
+                                        filter(mqtl_status == "mqtl") %>%
+                                        pull(snp)
+               ))
+             , "Number of rows with a SNP whose culprit SNP *does not* match 
+             the ID of an mQTL SNP" =
+               sum(!( culprit_snp %in% (snp_x_ewas_probe %>%
+                                          filter(mqtl_status == "mqtl") %>%
+                                          pull(snp)
+               )))
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+      **Before** adding `probe_id` and `pval` with join using `\"snp\" = 
+      \"culprit_snp\"`"
+  ))
+
+
+# 1) CONNECT POTENTIAL MQTL-BY-ASSOCIATION SNPS TO THE EWAS PROBES THAT THEY ARE
+# ASSOCIATED WITH VIA THEIR CULPRIT SNP
+
+mqtl_by_assoc <- snp_x_ewas_probe %>% 
+  # Use only SNP x EWAS probes that are mQTLs:
+  filter( mqtl_status == "mqtl" ) %>% 
+  # Add the data to mqtl_by_assoc with a left join:
+  dplyr::left_join( mqtl_by_assoc
+                    , .
+                    , by = c("culprit_snp" = "snp")
+                    , relationship = "many-to-many" )
+invisible( gc() )
+
+data.table::setDT(mqtl_by_assoc)
+
+# Summary of data frame:
+mqtl_by_assoc %>%
+  group_by( mqtl_status ) %>% 
+  slice_sample(n=4) %>% 
+  ungroup() %>% 
+  gt::gt() %>%
+  fmt_integer( ) %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+      **After** adding `probe_id` and `pval` with join using `\"snp\" = 
+      \"culprit_snp\"`"
+  ))
+
+mqtl_by_assoc %>% summarise( 
+  n()
+  , ncol(.)
+  , n_distinct(snp)
+  , n_distinct(snp, culprit_snp)
+  , "N rows with SNP whose culprit SNP *is not* an mQTL" =
+    sum( is.na(probe_id) )
+  , "N rows with SNP whose culprit SNP *is* an mQTL" =
+    sum( !is.na(probe_id) )
+) %>%
+  gt::gt() %>%
+  fmt_integer( ) %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+     **After** adding `probe_id` and `pval` with join using `\"snp\" = 
+      \"culprit_snp\"`"
+  ))
+
+mqtl_by_assoc %>%
+  count(mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+
+
+# 2) REMOVE ANY SNP x EWAS PROBE COMBINATIONS THAT DO NOT EXIST AMONG THE 
+# SNP x EWAS PROBE PAIRINGS THAT WERE MADE IN 0406
+
+# (These pairs cannot be mqtl-by-association since the pairings were not made in
+# 0406. There is no point in filtering away a pairing that does not exist.)
+
+# Add column indicating whether the row in mqtl_by_assoc has a matching set of
+# scheme, snp, state_locus & probe_id among the pairings from 0406:
+mqtl_by_assoc %<>% 
+  dplyr::left_join(
+    .
+    , snp_x_ewas_probe %>%
+      select(scheme, snp, state_locus, probe_id ) %>% 
+      mutate( pairing_from_0406 = TRUE )
+    , by = c("scheme", "snp", "state_locus", "probe_id" )
+  )
+invisible( gc() )
+
+# Look at resulting column:
+mqtl_by_assoc %>%
+  count(pairing_from_0406) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Stop if there are rows where 'pairing_from_0406' is NA that also have snp +
+# state_locus that match sl_snp:
+stopifnot(
+  0 == dplyr::semi_join(
+    mqtl_by_assoc %>% filter( is.na( pairing_from_0406 ) )
+    , sl_snp
+    , by = c("scheme", "snp", "state_locus" )
+  ) %>% nrow()
+)
+
+# Remove the rows in mqtl_by_assoc that are not proper mQTL-by-association
+# pairs:
+dim( mqtl_by_assoc )
+mqtl_by_assoc %<>% filter( pairing_from_0406 == TRUE )
+dim( mqtl_by_assoc )
+
+
+# Summary of data frame:
+mqtl_by_assoc %>% summarise( 
+  n()
+  , ncol(.)
+  , n_distinct(snp)
+  , n_distinct(snp, culprit_snp)
+  , "N rows with SNP whose culprit SNP *is not* an mQTL" =
+    sum( is.na(probe_id) )
+  , "N rows with SNP whose culprit SNP *is* an mQTL" =
+    sum( !is.na(probe_id) )
+) %>% 
+  gt::gt() %>%
+  fmt_integer( ) %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+     **After** removing the rows with `snp` x `probe_id` combinations that are 
+    not present in the data from 0406"
+  ))
+
+
+# 3) RECODE "mqtl"  IN THE 'mqtl_status' COLUMN AS "mqtl-by-association"
+mqtl_by_assoc %<>%
+  mutate( mqtl_status = ifelse( is.na(probe_id)
+                                , yes = mqtl_status
+                                , no = "mqtl-by-association" ) 
+  )
+
+mqtl_by_assoc %>%
+  count(mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+     **After** recoding `mqtl_status`"
+  ))
+invisible( gc() )
+
+# There should only be 1 row for every unique combination of scheme, snp,
+# culprit_snp, and probe_id. Stop if not:
+stopifnot(
+  ( mqtl_by_assoc %>% nrow() ) ==
+  ( mqtl_by_assoc %>%
+      distinct(scheme, snp, culprit_snp, probe_id ) %>%
+      nrow() )
+    
+)
+
+# Stop if mqtl_by_assoc contains any rows with a scheme/snp/state_locus
+# combination that is not present in sl_snp:
+stopifnot(
+  0 == nrow( anti_join( 
+    mqtl_by_assoc, sl_snp, by = c("scheme", "snp", "state_locus")
+  ) )
+)
+invisible( gc() )
+```
+
+
+## Aggregate rows with the same `scheme`, `snp`, and `probe_id`
+
+Combine rows with duplicate `scheme`, `snp`, and `probe_id` due to the SNP being implicated by more than one culprit mQTL SNP. Combine the rows by combining the different culprit SNPs into one string with a separator. Use only the smallest of the culprit SNP x EWAS probe p-values.
+
+```{r}
+mqtl_by_assoc %>% summarise( 
+  n()
+  , n_distinct(scheme, culprit_snp, snp, state_locus, probe_id)
+  , n_distinct(scheme, culprit_snp, snp, probe_id)
+  , n_distinct(scheme, snp, probe_id)
+) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>%
+  tab_header( title = md(
+    "`mqtl_by_assoc` -
+     **Before** aggregating rows by collapsing `culprit_snp`"
+  ))
+
+# Add column with number of distinct combinations of scheme, snp and probe_id.
+# Can be used to check the aggregation of rows later (optional)
+mqtl_by_assoc %<>% 
+  add_count( scheme, snp, probe_id )
+invisible( gc() )
+
+if( nrow(mqtl_by_assoc) > 0 ){
+  mqtl_by_assoc %>%
+    filter( n == max(n) ) %>% 
+    arrange( desc(n), snp, probe_id, culprit_snp ) %>% 
+    head( max(.$n) ) %>% 
+    gt::gt() %>%
+    fmt_integer() %>%
+    tab_options( table.font.size = "x-small" ) %>% 
+    tab_header( title = md( "Look at rows with duplicate `scheme`+`snp`+`probe_id` 
+  in `mqtl_by_assoc`, if any" ))
+}
+
+# Make new column containing all culprit SNPs tied to a particular combination
+# of scheme, snp and probe_id:
+mqtl_by_assoc %<>% 
+  group_by( scheme, snp, probe_id ) %>%
+  mutate( culprit_snp_collapsed = paste( culprit_snp, collapse = "|") ) %>%
+  ungroup()
+invisible( gc() )
+mqtl_by_assoc <- data.table::as.data.table(mqtl_by_assoc)
+
+# Check that the number of rsIDs in culprit_snp_collapsed equals the number of
+# distinct combinations of scheme, snp and probe_id:
+stopifnot( 
+  "Aggregating culprit_snp was not successful" =
+    all( mqtl_by_assoc %>%
+           mutate( n_snps_in_culprit_snp_collapsed = lengths(
+             regmatches(culprit_snp_collapsed
+                        , gregexpr("[[:punct:]]", culprit_snp_collapsed) ) ) + 1
+           ) %>%
+           mutate( n_snps_in_collapsed_equals_count =
+                     n == n_snps_in_culprit_snp_collapsed ) %>% 
+           distinct(n_snps_in_collapsed_equals_count) %>% 
+           pull(n_snps_in_collapsed_equals_count) == TRUE )
+)
+
+mqtl_by_assoc %>%
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtl_by_assoc`" ))
+
+# Remove the original pval and culprit_snp column, rename the column with
+# aggregated culprit_snp IDs and select only distinct rows so that there is only
+# one row per scheme, snp and probe_id combination:
+mqtl_by_assoc %<>%
+  select( -culprit_snp, -n ) %>% 
+  rename( culprit_snp = culprit_snp_collapsed ) %>% 
+  select( scheme, snp, culprit_snp, everything() ) %>% 
+  distinct()
+
+# Summaries of resulting data frame:
+mqtl_by_assoc %>%
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtl_by_assoc` after aggregating culprit SNPs"))
+
+mqtl_by_assoc %>%
+  summarise( n()
+             , n_distinct( scheme, snp, culprit_snp, probe_id )
+             , n_distinct( scheme, snp, probe_id )
+             , n_distinct( scheme, snp, culprit_snp )
+             , n_distinct( scheme, snp )
+             , n_distinct( snp, probe_id )
+    
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtl_by_assoc` after aggregating culprit SNPs"))
+
+mqtl_by_assoc %>%
+  group_by( scheme ) %>% 
+  summarise( n()
+             , n_distinct( scheme, snp, culprit_snp, probe_id )
+             , n_distinct( scheme, snp, probe_id )
+             , n_distinct( scheme, snp, culprit_snp )
+             , n_distinct( scheme, snp )
+             , n_distinct( snp, probe_id )
+    
+  ) %>% 
+  janitor::adorn_totals() %>%   
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtl_by_assoc` after aggregating culprit SNPs 
+                          - Stratified by `scheme`"))
+```
+
+
+
+# Merge mQTL-by-association pairings with the other SNP x EWAS probe pairings from 0406
+
+```{r}
+# Use full join to merge the mQTL-by-association pairings with the SNP x EWAS
+# probe pairings made in 0406:
+
+# First, using snp, scheme, state_locus and probe_id as keys, join the SNP x
+# EWAS probe data with the mQTL-by-association pairings. The pval and
+# mqtl_status columns from mqtl_by_assoc get a suffix to show their origin
+# and to avoid getting rows with duplicate combinations of scheme + snp +
+# probe_id:
+all_snp_x_ewas_probe_pairings <- dplyr::full_join( 
+  mqtl_by_assoc
+  , snp_x_ewas_probe
+  , by = c("snp", "scheme", "state_locus", "probe_id"
+           )
+  # Add suffix to pval and mqtl_status from mqtl_by_assoc to avoid
+  # duplicate rows:
+  , suffix = c(".mqtl_by_assoc", "")
+) 
+
+# Convert to data.table:
+data.table::setDT(all_snp_x_ewas_probe_pairings)
+
+# Check that mqtl_status is NA in all rows where mqtl_status.mqtl_by_assoc =
+# "mqtl-by-association":
+stopifnot( 0 == (all_snp_x_ewas_probe_pairings %>% 
+  filter( mqtl_status.mqtl_by_assoc == "mqtl-by-association" &
+            !is.na(mqtl_status)
+  ) %>% nrow())
+)
+
+# Then, combine the mqtl_status columns:
+all_snp_x_ewas_probe_pairings %<>% 
+  mutate( mqtl_status_ = ifelse( is.na(mqtl_status.mqtl_by_assoc)
+                                 , no = mqtl_status.mqtl_by_assoc
+                                 , yes = mqtl_status )
+  )
+
+# Visual inspection of the results:
+all_snp_x_ewas_probe_pairings %>% 
+  count(mqtl_status_, mqtl_status, mqtl_status.mqtl_by_assoc) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+
+# Remove the superfluous mqtl_status column:
+all_snp_x_ewas_probe_pairings %<>% 
+  select( scheme
+          , snp
+          , culprit_snp
+          , state_locus
+          , probe_id
+          , mqtl_status = mqtl_status_ # select an rename the combined column
+  )
+# Sort rows in tidy manner:
+all_snp_x_ewas_probe_pairings %<>% 
+  arrange( scheme
+          , snp
+          , state_locus
+          , probe_id
+          , culprit_snp
+  )
+invisible( gc() )
+all_snp_x_ewas_probe_pairings
+
+# Summaries of resulting data frame:
+all_snp_x_ewas_probe_pairings %>% 
+  count(mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`mqtl_status` in `all_snp_x_ewas_probe_pairings`" ))
+
+all_snp_x_ewas_probe_pairings %>% 
+  count(scheme, mqtl_status) %>% 
+  tidyr::pivot_wider( names_from = scheme, values_from = n ) %>% 
+  janitor::adorn_totals( c("row", "col" )) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Scheme-wise `mqtl_status` in `all_snp_x_ewas_probe_pairings`"
+  ))
+
+all_snp_x_ewas_probe_pairings %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(all_snp_x_ewas_probe_pairings)`" ))
+
+all_snp_x_ewas_probe_pairings %>% 
+  filter( !is.na(culprit_snp) ) %>% 
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header(
+    title =
+      md( "Glance at mQTLs-by-association `all_snp_x_ewas_probe_pairings`" )
+  )
+
+# Summary of all_snp_x_ewas_probe_pairings
+all_snp_x_ewas_probe_pairings %>% 
+  summarise( n()
+             , n_distinct(scheme, snp, culprit_snp, probe_id)
+             , n_distinct(snp, culprit_snp, probe_id)
+             , n_distinct(snp, probe_id)
+             , n_distinct(snp, culprit_snp)
+             , n_distinct(scheme, snp, culprit_snp)
+             , n_distinct(snp, state_locus)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `all_snp_x_ewas_probe_pairings`" ))
+
+# Summary of all_snp_x_ewas_probe_pairings - stratified by scheme
+all_snp_x_ewas_probe_pairings %>% 
+  group_by( scheme ) %>% 
+  summarise( n()
+             , n_distinct(snp, culprit_snp, probe_id)
+             , n_distinct(snp, probe_id)
+             , n_distinct(snp, culprit_snp)
+             , n_distinct(snp, state_locus)
+  ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `all_snp_x_ewas_probe_pairings` -
+                          Stratified by `scheme`" ))
+
+# Stop if there are rows with duplicate scheme + snp + state_locus + probe_id
+stopifnot(
+  ( all_snp_x_ewas_probe_pairings %>% nrow() ) == 
+    ( all_snp_x_ewas_probe_pairings %>%
+       distinct( scheme, snp, state_locus, probe_id ) %>% 
+       nrow() )
+)
+
+
+# Check that all the rows in snp_x_ewas_probe are present in new df:
+stopifnot( 
+  0 == dplyr::anti_join( snp_x_ewas_probe 
+                         , all_snp_x_ewas_probe_pairings
+                         , by = c("snp", "scheme", "state_locus", "probe_id") ) %>%
+    nrow()
+)
+# (anti_join(x,y) = rows in x that do not have a match in y)
+
+# Check that all the rows in mqtl_by_association are present in new df:
+stopifnot( 
+  0 == dplyr::anti_join( mqtl_by_assoc
+                         , all_snp_x_ewas_probe_pairings
+                         , by = c("snp", "scheme", "state_locus", "probe_id") ) %>%
+    nrow()
+)
+
+
+# Stop if there are any SNP x SL combinations in all_snp_x_ewas_probe_pairings
+# that are not present in the SNP x SL key from 0406:
+stopifnot(
+  0 == anti_join( all_snp_x_ewas_probe_pairings
+                  , sl_snp
+                  , by = c("scheme", "snp", "state_locus" )
+  ) %>% nrow()
+)
+
+# Remove data frames that are no longer needed:
+# rm(snp_x_ewas_probe, sl_ewas_probe, sl_snp, mqtl_by_assoc, mqtls)
+rm(snp_x_ewas_probe, mqtl_by_assoc, mqtls)
+invisible( gc() )
+```
+
+
+# Add status columns pertaining to the SNP x EWAS probe pairing and the SNP x state locus pairing
+
+If a SNP is paired with multiple EWAS probes belonging to the same state locus, and it is in a mQTL(-by-association) pair with at least one of the EWAS probes, then the SNP x state locus pairing must be removed in its entirety. 
+We therefore need a column that indicates whether a SNP x SL combination is to be removed or kept.
+
+```{r}
+# Rename the mqtl_status column to make clear that it describes the SNP x EWAS
+# probe pairing and not the SNP x SL pairing
+all_snp_x_ewas_probe_pairings %<>%
+  rename( snp_ewas_probe_mqtl_status = mqtl_status )
+
+all_snp_x_ewas_probe_pairings %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(all_snp_x_ewas_probe_pairings)`" ))
+
+# Add new column indicating status of SL x SNP pairing:
+all_snp_x_ewas_probe_pairings %<>%
+  # Select only rows that are mqtl or mqtl-by-association:
+  filter( !is.na(snp_ewas_probe_mqtl_status) ) %>% 
+  # Get the unique SNP x SL combinations:
+  distinct( scheme, snp, state_locus ) %>%
+  # Add column indicating that the SNP x SL combo is mqtl(-by-association):
+  mutate( snp_sl_mqtl_status = "mqtl or mqtl-by-association" ) %>% 
+  # Add the new indicator column to all_snp_x_ewas_probe_pairings using join:
+  dplyr::left_join(
+    all_snp_x_ewas_probe_pairings
+    , .
+    , by = c("scheme", "snp", "state_locus")
+    , relationship = "many-to-many" )
+
+# Ensure that df is a data.table:
+data.table::setDT(all_snp_x_ewas_probe_pairings)
+
+# # Compare result with different approach:
+# all_snp_x_ewas_probe_pairings %>% 
+#   group_by( scheme, snp, state_locus ) %>% 
+#   mutate( snp_sl_mqtl_status_ = any( !is.na(snp_ewas_probe_mqtl_status)) ) %>% 
+#   ungroup() %>% 
+#   mutate( snp_sl_mqtl_status_ = ifelse( snp_sl_mqtl_status_ == TRUE
+#                                         , yes = "mqtl or mqtl-by-association"
+#                                         , no = NA)
+#           , identical_result = snp_sl_mqtl_status_ %in% snp_sl_mqtl_status          
+#   ) %>% 
+#   count( identical_result )
+
+
+# Look at resulting data frame:
+all_snp_x_ewas_probe_pairings %>% 
+  group_by( snp_sl_mqtl_status, snp_ewas_probe_mqtl_status) %>% 
+  slice_sample( n = 3 ) %>% 
+  ungroup() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Sample from `all_snp_x_ewas_probe_pairings`" ))
+
+# Summaries:
+all_snp_x_ewas_probe_pairings %>% 
+  count(scheme, snp_sl_mqtl_status) %>% 
+  tidyr::pivot_wider( names_from = scheme, values_from = n ) %>% 
+  janitor::adorn_totals( c("row", "col" )) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Scheme-wise `snp_sl_mqtl_status` in `all_snp_x_ewas_probe_pairings` using 
+    all rows"
+  ))
+
+all_snp_x_ewas_probe_pairings %>% 
+  summarise( 
+    n()
+    , n_distinct(scheme, snp, state_locus, probe_id)
+    , n_distinct(scheme, snp, state_locus)
+    , n_distinct(scheme, snp)
+    , n_distinct(snp)
+    , n_distinct(scheme, snp, probe_id)
+    , n_distinct(scheme, probe_id)
+    , n_distinct(probe_id)
+    , "N SNP x EWAS probe pairs that are mQTLs/mQTLs-by-association" =
+      sum( !is.na(snp_ewas_probe_mqtl_status))
+    , "N SNP x EWAS probe pairs that are **not** mQTLs/mQTLs-by-association" =
+      sum( is.na(snp_ewas_probe_mqtl_status))
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Summary of `all_snp_x_ewas_probe_pairings` - all rows"
+  ))
+
+# Summary of SNP x SL combinations:
+all_snp_x_ewas_probe_pairings %>% 
+  distinct( scheme, snp, state_locus, snp_sl_mqtl_status ) %>% 
+  summarise( 
+    n()
+    , n_distinct(scheme, snp, state_locus)
+    , n_distinct(scheme, snp)
+    , n_distinct(scheme)
+    , n_distinct(snp)
+    , "N SNP x SL pairs that will be removed due to mQTL status" =
+      sum( !is.na(snp_sl_mqtl_status))
+    , "N SNP x SL pairs that will **not** be removed" =
+      sum( is.na(snp_sl_mqtl_status))
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md(
+    "Summary of `all_snp_x_ewas_probe_pairings` - only row with distinct 
+    combinations of `scheme`, `snp`, `state_locus` and `snp_sl_mqtl_status`"
+  ))
+```
+
+
+
+# Update SNP x SL pairings from 0406 and export
+
+Use `all_snp_x_ewas_probe_pairings` as basis. 
+Remove all SNP x SL pairings where the SL contains one or more EWAS probes classified as in an mqtl or mqtl-by-association with the SNP in question. 
+One row per SNP x SL pairing.
+
+
+```{r}
+# Remove all rows with SNP x SL pairings that are classified as
+# mqtl or mqtl-by-association:
+sl_snp_updated <- all_snp_x_ewas_probe_pairings %>% 
+  filter( !(snp_sl_mqtl_status %in% "mqtl or mqtl-by-association") )
+
+# Convert to data.table:
+data.table::setDT(sl_snp_updated)
+
+# Stop unless all rows have mqtl_status = NA
+stopifnot( all( is.na(sl_snp_updated$snp_sl_mqtl_status)) )
+
+# Select only distinct combinations of snp, sl and scheme:
+sl_snp_updated %<>% distinct( snp, state_locus, scheme )
+
+
+# Stop unless the number of rows in sl_snp_updated equals the number of rows in
+# sl_snp minus the number of SNP x SL combos in all_snp_x_ewas_probe_pairings
+# where snp_sl_mqtl_status = "mqtl or mqtl-by-association"
+stopifnot(
+  nrow( sl_snp_updated ) == nrow(sl_snp ) - (all_snp_x_ewas_probe_pairings %>% 
+    filter( snp_sl_mqtl_status %in% "mqtl or mqtl-by-association" ) %>%
+      distinct( scheme, snp, state_locus ) %>% 
+      nrow() )
+)
+
+
+# Sort rows by snp ID, then scheme
+sl_snp_updated %<>% arrange( snp, scheme, state_locus )
+
+
+sl_snp_updated %>% 
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(sl_snp_updated)`" ))
+
+# Summary of data to keep:
+sl_snp_updated %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct(scheme, snp, state_locus )
+             , n_distinct(snp, state_locus )
+             , n_distinct(scheme, snp )
+             , n_distinct(snp )
+             ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`sl_snp_updated` Summary" ))
+
+sl_snp %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct(scheme, snp, state_locus )
+             , n_distinct(snp, state_locus )
+             , n_distinct(scheme, snp )
+             , n_distinct(snp )
+             ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`sl_snp` Summary" ))
+
+# Stop if there are combinations of scheme/snp/state locus that are not present
+# in 0406_snp_state_loci.feather:
+stopifnot(
+  nrow( dplyr::anti_join( sl_snp_updated
+                          , sl_snp
+                          , by = c("snp", "state_locus", "scheme") )
+  ) == 0 )
+
+# Summary of data that was removed:
+all_snp_x_ewas_probe_pairings %>% 
+  filter( snp_sl_mqtl_status %in% "mqtl or mqtl-by-association" ) %>% 
+  distinct( snp, state_locus, scheme ) %>% 
+  summarise( n()
+             , n_distinct(scheme, snp, state_locus )
+             , n_distinct(snp, state_locus )
+             , n_distinct(scheme, snp )
+             , n_distinct(snp )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header(title = md( "Summary of SL x SNP combinations that were removed"))
+
+
+
+# Export:
+sl_snp_updated %>% feather::write_feather( updated_snp_sl_pairings_path )
+
+# Get metadata of exported file:
+metadata <- file.info( updated_snp_sl_pairings_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( updated_snp_sl_pairings_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+```
+
+
+
+# Update EWAS probe x SL pairings from 0406 and export
+
+Use `all_snp_x_ewas_probe_pairings` as basis. 
+Remove all EWAS probe x SL pairings belonging to SLs that have zero SNP x SL pairings left after mQTL filtering. 
+This means that every single SNP that an SL was paired with prior to mQTL filtering has been classified as being in an mQTL or an mQTL-by-association with at least one EWAS probes in the SL. 
+
+```{r}
+# Remove all rows with SNP x SL pairings that are classified as
+# mqtl or mqtl-by-association:
+sl_ewas_probe_updated <- all_snp_x_ewas_probe_pairings %>% 
+  filter( !(snp_sl_mqtl_status %in% "mqtl or mqtl-by-association") )
+
+# Convert to data.table:
+data.table::setDT(sl_ewas_probe_updated)
+
+# Stop unless all rows have snp_sl_mqtl_status = NA
+stopifnot( all( is.na(sl_ewas_probe_updated$snp_sl_mqtl_status)) )
+
+# Select only distinct combinations of snp, sl and scheme:
+sl_ewas_probe_updated %<>% distinct( scheme, probe_id, state_locus )
+
+# Add EWAS probe chr and coordinate, + state
+sl_ewas_probe_updated %<>% 
+  dplyr::left_join( .
+                    , sl_ewas_probe
+                    , by = c("scheme", "probe_id", "state_locus" )
+  ) %>% 
+  # Use same column order as sl_ewas_probe:
+  select( names(sl_ewas_probe) )
+invisible( gc() )
+
+# Check that all the rows in sl_ewas_probe_updated are also present in
+# sl_ewas_probe:
+stopifnot( 
+  0 == ( dplyr::anti_join(
+    sl_ewas_probe_updated
+    , sl_ewas_probe
+    , by = c("scheme", "probe_id", "state_locus", "probe_chr", "probe_coord"
+             , "state" )
+  ) %>% nrow() )
+)
+
+# Check that sl_ewas_probe_update equals sl_ewas_probe retaining only rows with
+# SL x EWAS probe combinations whose state locus is not classified as mQTL or
+# mQTL-by-association in all_snp_x_ewas_probe_pairings:
+stopifnot( 
+  all.equal(
+    # Updated SL x EWAS probe pairings:
+    sl_ewas_probe_updated %>%
+      # Ensure that the dfs have the same row order:
+      arrange( scheme, probe_id )
+    # The original SL x EWAS probe pairings, but only rows with state loci that
+    # still remain in our data after mQTL filtering :
+    , sl_ewas_probe %>%
+      filter( state_locus %in% ( all_snp_x_ewas_probe_pairings %>% 
+                filter( is.na(snp_sl_mqtl_status)) %>% 
+                pull( state_locus )) ) %>%
+      # Ensure that the dfs have the same row order:
+      arrange( scheme, probe_id )
+  )
+)
+
+# # # Alternative way:
+# sl_ewas_probe_updated_ <- sl_ewas_probe %>%
+#   filter( state_locus %in% sl_snp_updated$state_locus )
+
+
+# Sort rows by scheme, then probe coordinate, like in 0404:
+sl_ewas_probe_updated %<>% arrange( scheme, probe_coord )
+
+# Summary of data to keep:
+sl_ewas_probe %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct( scheme, probe_id, state_locus )
+             , n_distinct( scheme, probe_id )
+             , n_distinct( scheme, state_locus )
+             , n_distinct( scheme )
+             , n_distinct( state )
+             , n_distinct( probe_id )
+             , n_distinct( state_locus )
+             ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `sl_ewas_probe`" ))
+
+# Summary of data to keep:
+sl_ewas_probe_updated %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct( scheme, probe_id, state_locus )
+             , n_distinct( scheme, probe_id )
+             , n_distinct( scheme, state_locus )
+             , n_distinct( scheme )
+             , n_distinct( state )
+             , n_distinct( probe_id )
+             , n_distinct( state_locus )
+             ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `sl_ewas_probe_updated`" ))
+
+sl_ewas_probe_updated %>% 
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(sl_ewas_probe_updated)`" ))
+
+
+# Summary of SL x EWAS probe pairings that were removed (if any):
+# (i.e. rows in original sl_ewas_probe, but not the updated one)
+dplyr::anti_join(
+  sl_ewas_probe
+  , sl_ewas_probe_updated
+  , by = c("scheme", "probe_id", "state_locus", "probe_chr", "probe_coord"
+           , "state" )
+) %>% 
+  summarise( n()
+             , ncol(.)
+             , n_distinct( scheme, probe_id, state_locus )
+             , n_distinct( scheme, probe_id )
+             , n_distinct( scheme, state_locus )
+             , n_distinct( scheme )
+             , n_distinct( state )
+             , n_distinct( probe_id )
+             , n_distinct( state_locus )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of SL x EWAS probe pairings removed by mQTL 
+                          filter (if any)" ) )
+
+dplyr::anti_join(
+  sl_ewas_probe
+  , sl_ewas_probe_updated
+  , by = c("scheme", "probe_id", "state_locus", "probe_chr", "probe_coord"
+           , "state" )
+) %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "SL x EWAS probe pairings removed by mQTL filter 
+                          (if any)" ) )
+
+
+
+# Export:
+sl_ewas_probe_updated %>%
+  feather::write_feather( updated_all_scheme_probes_path )
+
+# Get metadata of exported file:
+metadata <- file.info( updated_all_scheme_probes_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( updated_all_scheme_probes_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+```
+
+
+# Update SNP list and export
+
+Use `all_snp_x_ewas_probe_pairings` as basis.
+
+```{r}
+# Remove all rows with SNP x SL combinations that are classified as
+# mQTL(-by-association):
+snp_list_updated <- all_snp_x_ewas_probe_pairings %>% 
+  filter( is.na(snp_sl_mqtl_status) )
+
+# Convert to data.table:
+data.table::setDT(snp_list_updated)
+
+# Check that none of the remaining rows are mqtls(-by-association):
+stopifnot( 
+  all( is.na(snp_list_updated$snp_sl_mqtl_status)) &
+    all( is.na(snp_list_updated$snp_ewas_probe_mqtl_status))
+)
+
+# Select only distinct SNP IDs:
+snp_list_updated %<>% distinct(snp)
+
+# Check that all the SNPs are present in original SNP list:
+stopifnot( all( snp_list_updated$snp %in% snp_list$snp ) )
+
+# Add SNP chromosome and coordinate column using original SNP list:
+snp_list_updated %<>% dplyr::left_join( . , snp_list, by = "snp" )
+
+snp_list_updated %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(snp_list_updated)`" ) )
+
+snp_list_updated %>% 
+  summarise( n(), n_distinct(snp) ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(snp_list_updated)`" ) )
+
+# Summary of SNPs that were completely removed (if any)
+# Rows in original snp_list, but not the updated one:
+dplyr::anti_join(
+  sl_snp %>% distinct( snp )
+  , snp_list_updated
+  , by = "snp"
+) %>% 
+  summarise( n()
+             , ncol(.)
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of SNPs from 0406 that are completely 
+  removed from pipeline by mQTL filter (if any)" ) )
+
+dplyr::anti_join(
+  sl_snp %>% distinct( snp )
+  , snp_list_updated
+  , by = "snp"
+) %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Peek at SNPs from 0406 that are completely removed  
+                          from pipeline by mQTL filter (if any)" ) )
+dplyr::anti_join(
+  sl_snp %>% distinct( snp )
+  , snp_list_updated
+  , by = "snp"
+) %>% 
+  dplyr::left_join( ., all_snp_x_ewas_probe_pairings, by = "snp" ) %>% 
+  head(10) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Peek at SNPs from 0406 that are completely removed 
+  from pipeline by mQTL filter (if any) - with mQTL data" ))
+
+
+# Export:
+snp_list_updated %>% feather::write_feather( updated_snp_list_path )
+
+# Get metadata of exported file:
+metadata <- file.info( updated_snp_list_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( updated_snp_list_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+```
+
+
+
+# Export all the SNP x SL x EWAS probe pairings from 0406 with mQTL status
+
+I placed this chunk here because the code creating the updated versions of `snp_sl`, `snp_ewas_probe` and `snp_list` were written while the rows in `all_snp_x_ewas_probe_pairings` that are not classified as mqtl were simply coded as `NA`. I don't have time to rewrite that code, so I placed this chunk here so that I can make `snp_ewas_probe_mqtl_status` and `snp_sl_mqtl_status` more user-friendly by coding them more explicitly without having to rewrite the code.
+
+```{r}
+all_snp_x_ewas_probe_pairings %>% 
+  count(snp_sl_mqtl_status, snp_ewas_probe_mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "all_snp_x_ewas_probe_pairings before recoding" ))
+
+# Replace NA in the snp_sl_mqtl_status column with "keep": 
+all_snp_x_ewas_probe_pairings %<>% 
+  mutate( snp_sl_mqtl_status =
+            ifelse( is.na(snp_sl_mqtl_status)
+                    , yes = "keep"
+                    , no = snp_sl_mqtl_status
+            )
+  )
+
+all_snp_x_ewas_probe_pairings %>%
+  count(snp_sl_mqtl_status, snp_ewas_probe_mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "all_snp_x_ewas_probe_pairings after recoding 
+                          `snp_sl_mqtl_status`" ))
+
+# Replace NA in the snp_ewas_probe_mqtl_status column with "keep" if the SNP x
+# SL pairing is a keeper, otherwise replace it with
+# "state locus contains at least one ewas probe in mqtl or mqtl-by-association 
+# pair with snp":
+all_snp_x_ewas_probe_pairings %<>% 
+  mutate(
+    snp_ewas_probe_mqtl_status =
+      ifelse( is.na(snp_ewas_probe_mqtl_status) & snp_sl_mqtl_status == "keep"
+              , yes = "keep"
+              , no = snp_ewas_probe_mqtl_status
+      )
+    , snp_ewas_probe_mqtl_status =
+      ifelse( 
+        is.na(snp_ewas_probe_mqtl_status) & snp_sl_mqtl_status != "keep"
+        , yes =
+          "state locus contains at least one ewas probe in mqtl or mqtl-by-association pair with snp"
+        , no = snp_ewas_probe_mqtl_status
+      )
+  ) 
+
+all_snp_x_ewas_probe_pairings %>%
+  count(snp_sl_mqtl_status, snp_ewas_probe_mqtl_status) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "all_snp_x_ewas_probe_pairings after recoding 
+                          `snp_ewas_probe_mqtl_status`" ))
+
+
+all_snp_x_ewas_probe_pairings %>% 
+  group_by(scheme) %>% 
+  summarise( 
+    n()
+    , n_distinct(scheme, snp, state_locus, probe_id)
+    , n_distinct(scheme, snp, state_locus)
+    , n_distinct(scheme, snp)
+    , n_distinct(snp)
+    , n_distinct(scheme, snp, probe_id)
+    , n_distinct(scheme, probe_id)
+    , n_distinct(probe_id)
+    , "N SNP x EWAS probe pairs that are mQTLs/mQTLs-by-association" =
+      sum( grepl( "^mqtl$|mqtl-by-association", snp_ewas_probe_mqtl_status) )
+    , "N SNP x EWAS probe pairs removed by mQTL filter" =
+      sum( grepl( "^mqtl$|mqtl-by-association|in mqtl pair with snp$"
+                  , snp_ewas_probe_mqtl_status) )
+    , "N SNP x EWAS probe pairs that survived mQTL filter" =
+      sum( grepl( "keep", snp_ewas_probe_mqtl_status) )
+    , "N rows with SNP x SL pairs that are mQTLs/mQTLs-by-association" =
+      sum( grepl( "mqtl", snp_sl_mqtl_status) )
+    , "N rows with SNP x SL pairs that are **not** mQTLs/mQTLs-by-association" =
+      sum( grepl( "keep", snp_sl_mqtl_status) )
+  ) %>% 
+janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Stratified Summary of 
+                          `all_snp_x_ewas_probe_pairings`"))
+
+
+all_snp_x_ewas_probe_pairings %>% 
+  summarise( 
+    n()
+    , n_distinct(scheme, snp, state_locus, probe_id)
+    , n_distinct(scheme, snp, state_locus)
+    , n_distinct(scheme, snp)
+    , n_distinct(snp)
+    , n_distinct(scheme, snp, probe_id)
+    , n_distinct(scheme, probe_id)
+    , n_distinct(probe_id)
+    , "N SNP x EWAS probe pairs that are mQTLs/mQTLs-by-association" =
+      sum( grepl( "^mqtl$|mqtl-by-association", snp_ewas_probe_mqtl_status) )
+    , "N SNP x EWAS probe pairs removed by mQTL filter" =
+      sum( grepl( "^mqtl$|mqtl-by-association|in mqtl pair with snp$"
+                  , snp_ewas_probe_mqtl_status) )
+    , "N SNP x EWAS probe pairs that survived mQTL filter" =
+      sum( grepl( "keep", snp_ewas_probe_mqtl_status) )
+    , "N rows with SNP x SL pairs that are mQTLs/mQTLs-by-association" =
+      sum( grepl( "mqtl", snp_sl_mqtl_status) )
+    , "N rows with SNP x SL pairs that are **not** mQTLs/mQTLs-by-association" =
+      sum( grepl( "keep", snp_sl_mqtl_status) )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Summary of `all_snp_x_ewas_probe_pairings`" ))
+
+# Look at data frame:
+all_snp_x_ewas_probe_pairings %>% 
+  group_by(snp_sl_mqtl_status, snp_ewas_probe_mqtl_status) %>% 
+  slice_sample(n = 3) %>% 
+  ungroup() %>% 
+  arrange( scheme, snp, state_locus ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "`head(all_snp_x_ewas_probe_pairings)`" ))
+
+# Export:
+all_snp_x_ewas_probe_pairings %>% 
+  feather::write_feather( all_snp_ewas_probe_pairings_path )
+
+# Get metadata of exported file:
+metadata <- file.info( all_snp_ewas_probe_pairings_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( all_snp_ewas_probe_pairings_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+```
+
+
+# EWAS probes excluded from pipeline completely due to mQTL status
+
+Identify the EWAS probes that are completely removed from the probe list because of their mQTL status, if any.
+
+```{r}
+# Make column with number of pairings per unique EWAS probe and a column with
+# how many of those pairings are "blocked" by mQTL filter:
+all_snp_x_ewas_probe_pairings %<>% 
+  group_by( probe_id ) %>% 
+  mutate(
+    n_pairings_per_probe_id = n()
+    , n_blocked_pairings_per_probe_id =
+      sum( !(snp_ewas_probe_mqtl_status %in% "keep") )
+    , n_remaining_probe_pairings_after_mqtl_filter = 
+      n_pairings_per_probe_id - n_blocked_pairings_per_probe_id
+    , all_pairings_with_probe_blocked = 
+      n_pairings_per_probe_id == n_blocked_pairings_per_probe_id
+  ) %>% 
+  ungroup()
+
+# Peek at resulting df:
+all_snp_x_ewas_probe_pairings %>% 
+  filter( n_blocked_pairings_per_probe_id > 0 ) %>% 
+  filter( n_pairings_per_probe_id == min(n_pairings_per_probe_id) ) %>% 
+  arrange( probe_id, desc(snp_ewas_probe_mqtl_status) ) %>% 
+  head( min( c( min(.$n_pairings_per_probe_id), 30)) ) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Summary of new columns (distinct combinations of probe ID only)
+all_snp_x_ewas_probe_pairings %>% 
+  distinct( probe_id
+            , n_pairings_per_probe_id
+            , n_blocked_pairings_per_probe_id
+            , n_remaining_probe_pairings_after_mqtl_filter
+            , all_pairings_with_probe_blocked ) %>% 
+  summary() %>% 
+  as.data.frame.matrix() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Summary of unique EWAS probes:
+all_snp_x_ewas_probe_pairings %>% 
+  distinct( probe_id, all_pairings_with_probe_blocked ) %>% 
+  count( all_pairings_with_probe_blocked ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+# Extract the EWAS probes that are excluded from the pipeline completely (i.e.
+# all of their pairings are blocked due to mQTL status)
+excluded_ewas_probes <- all_snp_x_ewas_probe_pairings %>% 
+  filter( all_pairings_with_probe_blocked == TRUE )
+
+excluded_ewas_probes %>% 
+  summarise( n()
+             , n_distinct( probe_id, snp )
+             , n_distinct( probe_id )
+             # , unique( n_remaining_probe_pairings_after_mqtl_filter )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+excluded_ewas_probes %>% 
+  summary() %>% 
+  as.data.frame.matrix() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+excluded_ewas_probes %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Remove unnecessary columns and add exclusion reason:
+excluded_ewas_probes %<>% 
+  distinct( probe_id ) %>% 
+  mutate( exclusion_reason =
+            "all ewas probe x snp pairings removed by moderate mqtl filter"
+  )
+
+excluded_ewas_probes %>% 
+  summarise( n()
+             , n_distinct( probe_id )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+excluded_ewas_probes %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+
+# Export:
+excluded_ewas_probes %>% readr::write_tsv( .
+                                           , file = excluded_ewas_probes_path
+                                           , col_names = TRUE
+)
+rm(excluded_ewas_probes)
+
+
+# Get metadata of exported file:
+metadata <- file.info( excluded_ewas_probes_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( excluded_ewas_probes_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+
+
+# Remove the no longer needed columns from all_snp_x_ewas_probe_pairings:
+dim( all_snp_x_ewas_probe_pairings )
+all_snp_x_ewas_probe_pairings %<>% 
+  select( -contains("per_probe_id")
+          , -n_remaining_probe_pairings_after_mqtl_filter
+          , -all_pairings_with_probe_blocked )
+dim( all_snp_x_ewas_probe_pairings )
+invisible( gc() )
+```
+
+
+
+# SNPs excluded from pipeline completely due to mQTL status
+
+
+```{r}
+# Make column with the number of SNP x EWAS probe pairings per unique SNP and a
+# column with how many of those pairings are "blocked" by mQTL filter:
+all_snp_x_ewas_probe_pairings %<>% 
+  group_by( snp ) %>% 
+  mutate(
+    n_pairings_per_snp = n()
+    , n_blocked_pairings_per_snp =
+      sum( !(snp_ewas_probe_mqtl_status %in% "keep") )
+    , n_remaining_snps_after_mqtl_filter = 
+      n_pairings_per_snp - n_blocked_pairings_per_snp
+    , all_pairings_with_snp_blocked = 
+      n_pairings_per_snp == n_blocked_pairings_per_snp
+  ) %>% 
+  ungroup()
+
+# Peek at resulting df:
+all_snp_x_ewas_probe_pairings %>% 
+  filter( n_blocked_pairings_per_snp > 0 ) %>% 
+  filter( n_pairings_per_snp < min(n_pairings_per_snp) + 4 ) %>%
+  arrange( snp, scheme, desc(snp_ewas_probe_mqtl_status) ) %>% 
+  head( 30 ) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Summary of new columns (distinct combinations of probe ID only)
+all_snp_x_ewas_probe_pairings %>% 
+  distinct( snp
+            , n_pairings_per_snp
+            , n_blocked_pairings_per_snp
+            , n_remaining_snps_after_mqtl_filter
+            , all_pairings_with_snp_blocked ) %>% 
+  summary() %>% 
+  as.data.frame.matrix() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Summary of unique SNPs:
+all_snp_x_ewas_probe_pairings %>% 
+  distinct( snp, all_pairings_with_snp_blocked ) %>% 
+  count( all_pairings_with_snp_blocked ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+# Extract the SNPs that are excluded from the pipeline completely (i.e.
+# all of their pairings are blocked due to mQTL status)
+excluded_snps <- all_snp_x_ewas_probe_pairings %>% 
+  filter( all_pairings_with_snp_blocked == TRUE )
+
+# Stop if any of the excluded SNPs are in the updated SNP list
+stopifnot(
+  all( !( excluded_snps$snp %in% snp_list_updated ) )
+)
+
+excluded_snps %>% 
+  summarise( n()
+             , n_distinct( probe_id, snp )
+             , n_distinct( snp )
+  ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+# Choose only distinct snp ids:
+excluded_snps %<>% distinct( snp )
+
+# # Number of excluded SNPs + number of SNPs in updated list should equal number
+# # of SNPs in original SNP list
+# stopifnot(
+#   nrow(excluded_snps) + nrow(snp_list_updated) == nrow(snp_list)
+# ) # Nope, remember that we're using the snp list from 0202
+
+excluded_snps %>% 
+  summarise( n(), n_distinct( snp ) ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" )
+
+# Add exclusion reason column:
+excluded_snps %<>% mutate(
+  exclusion_reason = "all pairings with snp removed by moderate mqtl filter"
+)
+
+excluded_snps %>% 
+  head() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+# Export for later use:
+excluded_snps %>% readr::write_tsv( .
+                                    , file = excluded_snps_path
+                                    , col_names = TRUE
+)
+
+# Get metadata of exported file:
+metadata <- file.info( excluded_snps_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) %>%
+  filter( grepl( excluded_snps_path, file) )
+
+metadata %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( "Metadata of the exported file" ))
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( 
+    stage_execution_time_dir
+    , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

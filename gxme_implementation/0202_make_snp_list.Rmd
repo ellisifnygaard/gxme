@@ -1,0 +1,503 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  
+  # GWAS file
+  chr_number: 1
+  # chr_number: 19
+  # root_dir: ""
+  root_dir: "C:/Temp/edj079/2025-03-21_pipeline_dir/chromosomes/Chr01"
+  # root_dir: "C:/Temp/edj079/chromosomes/Chr10"
+  # gwas_fileset_dir: "0201" # "hard-code" 0201
+  # gwas_fileset_name: "0201_gwas" # "hard-code"
+  # MQTL LD:
+  mqtl_ld_r2: 0.9
+  # mqtl_ld_tag_kb: "" # Dependent on snp list -> "hard-code"
+  # (to be used with the "--memory" flag)
+  # Can be used to ensure that PLINK has enough RAM for its main workspace.
+  # PLINK memory (OPTIONAL):
+  plink_memory_mb: !r NA
+  # plink_memory_mb: 500  
+  # plink_memory_mb: 42147
+  
+  # PLINK timeout 
+  # (maximum number of seconds a call to plink.exe can take before it's stopped)
+  plink_timeout: 300
+  
+  # ARGUMENT SIGNALLING THAT THE ANALYSES ARE REPLICATION ANALYSES
+  replication_analysis: FALSE # default = FALSE
+  
+  # Directory to export resulting files to:
+  stage_dir: "0202"
+title: "`r paste0('Make List of SNPs Remaining After Preliminary QC of GWAS Data - Chromosome ', params$chr_number) `"
+---
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+gwas_fileset_dir <- "0201" # "hard-code" 0201
+gwas_fileset_name <- paste0( gwas_fileset_dir, "_gwas" ) # "hard-code"
+
+# MQTL:
+mqtl_ld_r2 <- params$mqtl_ld_r2
+message( "mqtl_ld_r2: ", mqtl_ld_r2 )
+# mqtl_ld_tag_kb <- NA # Determined once snp list is ready
+message( "mqtl_ld_tag_kb will be determined once the SNP list has been created")
+
+# PLINK parameters
+plink_memory_mb <- params$plink_memory_mb
+
+# TIMEOUT WHEN CALLING PLINK VIA system()
+plink_timeout <- params$plink_timeout
+
+# ARGUMENT SIGNALLING THAT THE ANALYSES ARE REPLICATION ANALYSES
+replication_analysis <- params$replication_analysis
+
+stage_dir <- params$stage_dir
+```
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+-   `r  file.path( gwas_fileset_dir, paste0( gwas_fileset_name, ".bim" ))`
+  
+-   ``
+
+## Files produced by this script
+
+-   `r  file.path( stage_dir, paste0( stage_dir, "_snp_list.feather") )` 
+
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  # , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+options(scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(data.table)
+library(gt)
+```
+
+
+# Import the .bim file produced in 0201
+
+```{r}
+bim <- readr::read_delim(
+  file.path( gwas_fileset_dir, paste0( gwas_fileset_name, ".bim" ) )
+  , col_names = c( "chr", "snp", "pos", "coord", "allele_1", "allele_2" )
+  , show_col_types = FALSE
+)
+invisible( gc() ) # garbage collection
+
+bim %>% 
+  summarise( n(), n_distinct(snp) ) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+bim %>% head() %>% gt::gt() %>% gt::tab_options(table.font.size = "x-small")
+```
+
+
+# Create data frame with the SNPs that were left after preliminary QC in 0201
+
+```{r}
+# Create df with SNP ID, chr and coord:
+snp_list <- bim %>% 
+  select( snp, snp_chr = chr, snp_coord = coord )
+dim(snp_list)
+
+# Overview/summaries of df
+head(snp_list) %>% gt::gt() %>% gt::tab_options(table.font.size = "x-small")
+
+snp_list %>% 
+  summarise( n(), n_distinct(snp), unique(snp_chr), n_distinct(snp, snp_coord), n_distinct(snp_coord)) %>% 
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+snp_list %>% 
+  summarise( n(), n_distinct(snp), unique(snp_chr), n_distinct(snp_coord) ) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+snp_list %>%
+  head() %>%
+  gt::gt() %>%
+  gt::tab_options(table.font.size = "x-small")
+
+# Stop if there are duplicate SNP IDs
+if( !(length( unique( snp_list$snp) ) == nrow( snp_list ) ) ){
+  stop( "0202: There are duplicate SNP IDs in the `snp_list` belonging to "
+        , "chromosome ", chr_number, "."
+        )
+}
+
+
+# Get any SNPs with identical coordinates:
+snps_same_coord <- snp_list %>% 
+  add_count( snp_coord ) %>% 
+  filter( n > 1 ) 
+
+snps_same_coord %>%
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+# Give warning if there are rows/SNPs with the same coord:
+if( !(length( unique(( snp_list$snp_coord)) ) == nrow( snp_list ) ) ){
+  warning( "0202: There are "
+           , nrow( snps_same_coord )
+           , " SNPs on chromosome "
+           , chr_number
+           , " with the same coordinate as another SNP in `snp_list`.\n"
+           , "(There are ", length( unique( snp_list$snp) ), " unique SNP IDs, "
+           , "but only ", length( unique( snp_list$snp_coord) ), " unique "
+           , "basepair coordinates.)"
+  )
+}
+```
+
+
+# Export data frame/SNP list for later use
+
+```{r}
+# Export to feather file:
+file_path <- file.path( stage_dir, paste0( stage_dir, "_snp_list.feather" ) )
+
+snp_list %>% feather::write_feather( . , path = file_path )
+invisible( gc() ) # garbage collection
+```
+
+
+# LD Calculations
+
+Later in the pipeline, we need a picture of the which SNPs are highly correlated. 
+This is particularly important when attempting to remove SNPs that influence one or several EWAS probes (such as SNPs in mQTL pairs). Since removing mQTL pairs is crucial for the assumptions of our model to hold, it is prudent to remove not only the SNPs identified as mQTL SNPs, but also any SNPs that are in high LD with them - SNPs that we call "mQTL/guilty by association".    
+
+The correlation structure in the SNP data can also be utilised to avoid performing equivalent and redundant analyses, thus saving computation time and memory. E.g. if SNP1 and SNP2 are highly correlated with R^2 = 0.98 and they both end up being paired with the exact same state locus/set of probes, then the Haplin analysis of SNP1 and SNP2 will be almost identical.  
+
+# mQTL LD Calculations
+
+## Determine `mqtl_ld_tag_kb`
+
+In order to ensure that PLINK compares each target SNP with every single other SNP on the chromosome, let `-tag-kb` be 
+
+´ max(snp_list$snp_coord) - min(snp_list$snp_coord) ´
+
+```{r}
+# IF replication_analysis = TRUE, SET mqtl_ld_tag_kb TO 0.001 (I.E. 1 BASEPAIR)
+if( replication_analysis == TRUE ){
+  mqtl_ld_tag_kb <- 0.001
+} else{
+  # IF replication_analysis IS NOT TRUE, SET mqtl_ld_tag_kb LENGTH OF CHROMOSOME
+  # In basepairs:
+  mqtl_ld_tag_kb <- max(snp_list$snp_coord) - min(snp_list$snp_coord)
+  # Convert to kb:
+  mqtl_ld_tag_kb <- ceiling ( mqtl_ld_tag_kb / 1000 )
+  message( "mqtl_ld_tag_kb is set to "
+           , prettyNum( mqtl_ld_tag_kb, big.mark = ",")
+           , " kb")
+}
+```
+
+
+## Run `--show-tags`
+
+```{r fold.output=TRUE}
+message( "Generating mQTL '.tags.list' report using PLINK...")
+plink_command <- paste0( 
+  "plink "
+  # Choose fileset from 0201:
+  , "--bfile ", file.path( gwas_fileset_dir, gwas_fileset_name )
+  
+  # Show all tags:
+  , " --show-tags all "
+  
+  # Create plink.tags.list file:
+  
+  # Specify the minimum r-squared
+  , "--tag-r2 ", ifelse(replication_analysis == TRUE, yes = 1, no = mqtl_ld_r2)
+  # Specify constraint for PLINK's scan for tags:
+  , " --tag-kb " , mqtl_ld_tag_kb
+  # 1000 kb = 1 Mb = 1,000,000 basepairs
+  # Path for plink.tags.list report
+  , " --out ", file.path( stage_dir, paste0( stage_dir, "_mqtl" ) )
+  # Tell PLINK how much memory to reserve for its main workspace
+  , ifelse( is.na(plink_memory_mb)
+            , yes = "" # if not specified, don't add --memory flag
+            , no = paste0( " --memory ", plink_memory_mb ) )
+)
+message( "Running PLINK using the following command:\n"
+         , plink_command )
+
+system.time(
+  output_msg <- system( plink_command, intern = TRUE, timeout = plink_timeout )
+)
+invisible( gc() ) # garbage collection
+cat(output_msg, sep = "\n")
+```
+
+
+## Import `.tags.list` report
+
+
+Header descriptions from https://zzz.bwh.harvard.edu/plink/ld.shtml:  
+   
+* `SNP` = Target SNP ID  
+* `CHR` = Chromosome code  
+* `BP` = Physical position (base-pair)  
+* `NTAG` = Number of other SNPs that tag this SNP  
+* `LEFT` = Physical position of left-most (5') tagging SNP (bp)  
+* `RIGHT` = Physical position of right-most (3') tagging SNP (bp)  
+* `KBSPAN` = Kilobase size of region implied by LEFT-RIGHT  
+* `TAGS` = List of SNPs that tag target SNP  
+  
+  
+```{r}
+# Stop if generating the .tags.list report was not successful:
+if( file.exists(file.path(stage_dir, paste0( stage_dir, "_mqtl.tags.list"))) ==
+    FALSE ){
+  stop( file.path( root_dir, stage_dir, paste0( stage_dir, "_mqtl.tags.list" ) )
+        , " does not exist."
+        , " This could be due to PLINK running out of memory and therefore "
+        , "failing to generate the '.tags.list' report.\\"
+        , "Specifying `plink_memory_mb` or setting `plink_memory_mb` to a lower"
+        , " value might help."
+  )
+}
+ 
+mqtl_tags_list <- data.table::fread(
+  file.path( stage_dir, paste0(stage_dir, "_mqtl.tags.list") )
+  , header = TRUE
+)
+dim( mqtl_tags_list )
+mqtl_tags_list %>% 
+  head() %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+mqtl_tags_list %>%
+  sample_n( size = ifelse(
+    nrow(mqtl_tags_list) >= 10, yes = 10, no = nrow(mqtl_tags_list)
+  ) ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+```
+
+
+## Process `.tags.list` data frame
+
+```{r}
+# Remove SNPs with zero tags and rename columns:
+mqtl_tags_list %<>% 
+  select( snp = SNP
+          , snp_chr = CHR
+          , snp_coord = BP
+          , tags = TAGS
+          ) %>% 
+  filter( tags != "NONE" )
+
+dim( mqtl_tags_list )
+mqtl_tags_list %>% 
+  head() %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+# # This long version with one row per tagging SNP, typically uses more memory: 
+# mqtl_tags_list %>% 
+#   select( snp = SNP
+#           , snp_chr = CHR
+#           , snp_coord = BP
+#           , ntags = NTAG
+#           , tags = TAGS
+#           ) %>% 
+#   filter( tags != "NONE" ) %>% 
+#   tidyr::separate_longer_delim( tags, delim = "|") %>% 
+#   object.size()
+```
+
+
+## Export `.tags.list` data frame
+
+```{r}
+mqtl_tags_list %>% feather::write_feather( 
+  file.path( stage_dir, paste0( stage_dir, "_mqtl_ld_snps.feather" ) )
+  )
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

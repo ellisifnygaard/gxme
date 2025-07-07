@@ -1,0 +1,1136 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 4
+  
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  root_dir: "C:/Temp/edj079/2025-03-24_pipeline_dir/chromosomes/Chr04"
+  
+  # CUT-OFF:
+  cut_off: 1000000
+  # # Scheme-specific cut-offs:
+  # cut_off: !r c( "A1_TSS1" = 500000, "A2_TSS2" = 1000000, "Z_znf1" = 1000000, "Z_znf2" = 2000000 )
+  # cut_off: !r c( "A1_TSS1" = 50000, "A2_TSS2" = 10000, "Z_znf1" = 500000, "Z_znf2" = 1000000 )
+  
+  # File with all scheme-assigned ewas probes:
+  # ewas_all_scheme_probes_path: "0405/0405_all_scheme_probes.feather" # "hard-code"
+
+  
+  # Directory to export resulting files to:
+  stage_dir: "0406"
+
+title: "`r paste0('0406 Pair SNPs with all nearby scheme-assigned EWAS probes and then remove SNPs with no nearby probes - Chromosome ', params$chr_number) `"
+---
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Chromosome `r params$chr_number`
+
+
+Here we will use `HaplinMethyl::findCpGsnearSNP()` to pair SNPs up with EWAS probes that are within a specified cut-off limit from the SNP loci.  
+
+We will also identify any "probeless" SNPs, i.e. SNPs in the list from 0202 that do not have any CpGs/EWAS probes within the predetermined cut-off. 
+The predetermined cut-off, i.e. the number of basepairs in either of direction of the SNP coordinate where we will be looking for EWAS probes to pair with the SNP, is a parameter in this Rmd script.  
+  
+\      
+Note:  
+During our meeting on 22 June 2022, Josine said that 1Mb is the standard cut-off.  
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# Cut-off:
+cut_off <- params$cut_off
+
+
+# SNP LIST PATH:
+# "hard-code" SNP list path:
+snp_list_path <- file.path( "0202", "0202_snp_list.feather" )
+
+# "hard-code" EWAS probe list path:
+ewas_all_scheme_probes_path <- 
+  file.path( "0405", "0405_all_scheme_probes.feather" )
+
+# Stage directory:
+stage_dir <- params$stage_dir
+
+# Specify file path for tsv with all the probeless snps:
+probeless_snps_path <-
+  file.path( stage_dir, paste0( stage_dir, "_probeless_snps.tsv" ) )
+
+# Specify file path to new updated snp list:
+updated_snp_list_path <-
+  file.path( stage_dir, paste0( stage_dir, "_snp_list.feather" ) )
+
+# Specify file path to data frame with snp-state loci pairings:
+snp_state_loci_pairings_path <-
+  file.path( stage_dir, paste0( stage_dir, "_snp_state_loci.feather" ) )
+
+# Specify file path to data frame with EWAS probes with pairingless state loci:
+probes_with_pairingless_sl_path <- file.path(
+  stage_dir, paste0( stage_dir, "_ewas_probes_with_pairingless_sl.tsv" )
+)
+
+# Specify file path to new updated scheme-assigned EWAS probe list:
+updated_ewas_all_scheme_probes_path <-
+  file.path( stage_dir, paste0( stage_dir, "_scheme_probes.feather" ) )
+
+
+# Arrange cut-off information into a data frame:
+# If universal cut-off has been specified:
+if( is.null(names(cut_off)) | length(cut_off) == 1 ){
+  cut_off_info_df <- data.frame( scheme = "all", cut_off = cut_off )
+}else{
+  # If scheme-specific cut-offs were specified:
+  cut_off_info_df <- data.frame( scheme = names(cut_off)
+                                 , cut_off = cut_off)
+}
+
+``` 
+ 
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+ 
+## Files used by this script
+  
+  
+-   `r  snp_list_path`  - The SNP list with genomic coordinates from 0202.
+  
+-   `r  ewas_all_scheme_probes_path`  - The list of all the EWAS probes that were assigned to at least one stratification scheme during 0404.
+   
+
+## Files produced by this script
+  
+- `r  probeless_snps_path` - A tsv containing the rsIDs of the SNPs we want to exclude from the PLINK filesets due to them not having any 'nearby' scheme-assigned EWAS probes.  
+  
+-   `r updated_snp_list_path`  - Updated version of SNP list from 0202, but where any SNPs without 'nearby' EWAS probes have been excluded.  
+  
+- `r snp_state_loci_pairings_path` - A file containing the SNP ID + the state loci containing the SNPs' nearby EWAS probes. 
+ 
+ 
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+
+options( scipen = 20)
+```
+
+
+## Packages
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(readr)
+library(feather)
+library(gt)
+```
+
+# Cut-off summary message
+
+```{r}
+# Message to user if they provided a universal cut-off:
+if( nrow( cut_off_info_df ) == 1 ){
+  message( "Universal cut-off specified. Cut-off in all schemes = "
+           , prettyNum( cut_off_info_df$cut_off, big.mark = ",")
+           , " basepairs."
+           )
+} else {
+# Message to user if they provided scheme-specific cut-off:
+  message( "Scheme-specific cut-offs specified:\n"
+           , paste0( cut_off_info_df$scheme
+                     , " = "
+                     , prettyNum( cut_off_info_df$cut_off, big.mark = ",")
+                     , " basepairs\n" )
+  )
+}
+
+```
+
+
+
+# Import data
+
+
+## SNP list with coordinates (`r snp_list_path`)
+
+### File metadata
+
+```{r}
+# SNP list from 0202:
+metadata <- file.info( snp_list_path
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+```
+
+### Import data
+
+```{r}
+snp_list <- feather::read_feather( snp_list_path )
+dim(snp_list)
+head(snp_list)
+snp_list %>% 
+  sample_n( size = ifelse( nrow(snp_list) >= 5, yes = 5, no = nrow(snp_list) ))
+```
+
+
+
+## Scheme-assigned EWAS probes
+
+### File metadata
+
+```{r}
+# Probe list from 0405:
+metadata <- file.info( ewas_all_scheme_probes_path, extra_cols = FALSE )
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small")
+```
+
+### Import data
+
+```{r}
+probes <- feather::read_feather( ewas_all_scheme_probes_path )
+dim(probes)
+head(probes)
+probes %>% 
+  sample_n( size = ifelse( nrow(probes) >= 5, yes = 5, no = nrow(probes) ))
+
+probes %>% 
+  summarise( "N rows" = n()
+             , "N unique probe IDs" = n_distinct(probe_id) 
+             , "N unique schemes" = n_distinct( scheme )
+             , "N unique combinations of probe ID and scheme" = 
+               n_distinct( probe_id, scheme )
+             ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  fmt_integer( . , columns = everything(), use_seps = TRUE) %>%
+  tab_header( 
+    title =  md( "Summary of data in `probes`")
+    , subtitle =  md( ewas_all_scheme_probes_path ) 
+  ) %>% 
+  opt_align_table_header( "left" )
+```
+
+
+# Check that the SNPs and EWAS probes are from the same chromosome
+
+
+```{r}
+# Only one chromosome present in snp_list / probes:
+stopifnot(
+  "More than one unique chromosome number present in 'snp_list'" =
+    length( unique(snp_list$snp_chr) ) == 1
+  , "More than one unique chromosome number present in 'probes'" =
+    length( unique(probes$probe_chr) ) == 1
+)
+
+# Contain only the same chromosome number:
+stopifnot(
+  "Chromosome number in 'snp_list' is not equal to chromosome number in 'probes'" =
+    unique(snp_list$snp_chr) == unique(probes$probe_chr)
+)
+```
+
+
+
+# Pairing of EWAS probes and SNPs 
+
+Find the EWAS probes within `r paste0( prettyNum( params$cut_off, big.mark = ","), collapse = " / " )` basepairs of each SNP
+
+
+Pair the SNPs with all the 'nearby' scheme-assigned EWAS probes by getting the 'nearby' EWAS probes for each SNP with `HaplinMethyl::findCpGnearSNP()`. 
+
+
+```{r}
+message("Preparing for pairing SNPs with any scheme-assigned EWAS probes located within the specified number of basepairs (cut-off)...")
+# Prepare the `cpgs` argument 
+# ( a data frame containing all the ewas probe ids that have been assigned to a
+# scheme and their probe_start coordinate)
+
+# N.B.! IF THE CUT-OFF PARAMETER IS SCHEME_SPECIFIC, THE cpgs ARGUMENT WILL ONLY
+# CONTAIN PROBES ASSIGNED TO ONE OF THE SCHEMES EXPLICITLY GIVEN IN
+# params$cut_off
+
+# If using the same cut-off for all schemes:
+if( length( unique(cut_off) ) == 1){
+  cpgs <- probes %>% 
+    select( id = probe_id, coord = probe_coord ) %>% 
+    distinct() # in case there are probes assigned to multiple schemes
+  # Summary of cpgs:
+  # (using print because otherwise only the last object inside if/else
+  # statements get printed)
+  dim(cpgs) %>% print()
+  cpgs %>% summarise( n(), n_distinct(id) ) %>% print()
+  head(cpgs)
+} else {
+  # If using scheme-specific cut-offs:
+  cpgs_scheme <- probes %>% 
+    # Only extract probes that were assigned to the schemes in params$cut_off:
+    filter( scheme %in% cut_off_info_df$scheme ) %>% 
+    # filter( scheme %in% cut_off_df$scheme ) %>% 
+    select( id = probe_id, coord = probe_coord, scheme ) %>% 
+    distinct() # in case there are probes assigned to multiple schemes
+  # Summary of cpgs:
+  # (using print because otherwise only the last object inside if/else
+  # statements get printed)
+  dim(cpgs_scheme) %>% print() 
+  # cpgs_scheme %>% summarise( n(), n_distinct(id) ) %>% print()
+  head(cpgs_scheme) %>% print()
+  
+  # If params$cut_off contains fewer schemes than what's available in probes,
+  # print a warning:
+  if( length( unique(probes$scheme)) > length(params$cut_off) ){
+    warning( "Just FYI, you have specified fewer schemes in `cut_off` than "
+             , "what's currently available.\n"
+             , "We can detect EWAS probes that were assigned to/annotated with "
+             , "the following schemes:"
+             , paste0( 
+               base::setdiff( unique(probes$scheme), names(params$cut_off)) 
+               , collapse = ", ")
+             , ",\n but these schemes are not listed in the provided, "
+             , "scheme-specific 'cut_off' argument.\n"
+             , "If that was unintentional, you should revise your input.\n"
+             , "Could there be 'left-over' files in the root directory from an"
+             , " previous run of the pipeline?"
+             )
+  }
+  
+  # Split cpgs_scheme into a list with one df per scheme:
+  cpgs_scheme <- split( cpgs_scheme[ , c("id", "coord")]
+                        , f = cpgs_scheme$scheme
+                        # Drop schemes with zero probes from this list:
+                        , drop = TRUE  
+  )
+}
+
+
+
+#xxxx In the lapplys below, it would probably be faster to drop creating rows for probe-less SNPs where id and coord are NA, and just have lapply result in a list containing only SNPs that have nearby probes. This would make it more complicated to create summaries/logs of SNPs without nearby probes, but not impossible. F.ex. by using setdiff() with `snp_list` and `probes_nearby_snp`. I'm keeping as is for now due to ease of use and maintenance, but if it turns out the pipeline needs to shed some serious computational weight, then it would be worth implementing.
+
+# NB Using a for-loop with a similar set-up to the loop in 0401 where rows that
+# are no longer needed are removed does not perform better than the lapply
+# loops. (I tested it.)
+
+# Run findCpGsnearSNP() for each SNP on the chromosome
+
+# IF USING THE SAME CUT-OFF FOR ALL THE SCHEMES:
+if( length( unique(cut_off) ) == 1){
+  
+  message( "Pairing SNPs with 'nearby' scheme-assigned EWAS probes using "
+           , "universal cut-off..." )
+  
+  system.time(
+    probes_nearby_snp <- lapply( 1:nrow(snp_list), function(i){
+      # FOR EACH SNP IN THE SNP LIST:
+      # cat(i,",")
+      # Print out i for every 500 iterations:
+      if( i %% 1000 == 0 ){
+        cat( i, "SNPs down,", nrow(snp_list) - i, "SNPs to go  ...\n")
+      }
+      
+      # Prepare the `snp` argument
+      snp_df_i <- data.frame( marker = snp_list$snp[ i ]
+                            , chr = snp_list$snp_chr[ i ]
+                            , coord = snp_list$snp_coord[ i ] )
+      
+      # Use function to get a df containing the ID and start coord of all the
+      # nearby EWAS probes.
+      nearby_cpgs_i <- HaplinMethyl::findCpGsnearSNP( 
+        snp = snp_df_i
+        , cpgs = cpgs
+        , range = params$cut_off )
+      
+      # If findCpGsnearSNP() returns NULL, create data frame with snp id and NA
+      # values
+      if( is.null(nearby_cpgs_i) ){
+        nearby_cpgs_i <- data.frame( id = NA, coord = NA, snp = snp_df_i$marker )
+      }else{
+        # Add col with snp id:
+        nearby_cpgs_i$snp <- snp_df_i$marker
+      }
+      
+      # Return data frame:
+      return( nearby_cpgs_i )
+    })
+  ) #system.time
+} else {
+  # IF USING SCHEME-SPECIFIC CUT-OFFS:
+  message( "Pairing SNPs with 'nearby' scheme-assigned EWAS probes using"
+           , " scheme-specific cut-offs...")
+  
+  system.time(
+    
+    probes_nearby_snp <- lapply( 1:nrow(snp_list), function(i){
+      # Print out i for every 500 iterations:
+      if( i %% 1000 == 0 ){ 
+        cat( i, "SNPs down,", nrow(snp_list) - i, "SNPs to go  ...\n") 
+        }
+      
+      # FOR EACH SNP IN THE SNP LIST
+      
+      # Prepare the `snp` argument
+      snp_df_i <- data.frame( marker = snp_list$snp[ i ]
+                            , chr = snp_list$snp_chr[ i ]
+                            , coord = snp_list$snp_coord[ i ] )
+      
+      # THEN, FOR EACH SCHEME WITH PROBES...
+      scheme_probes_nearby_snp <- lapply( names(cpgs_scheme), function(s){
+        # (we skip schemes that do not have any probes on this chromosome)
+        # scheme_probes_nearby_snp <- lapply( 1:length(params$cut_off), function(s){
+        
+        # LOOK FOR NEARBY SCHEME PROBES:
+        # scheme_s <- s # scheme name
+        # cut_off_s <- params$cut_off[[s]] # scheme-specific cut-off
+        cut_off_s <- params$cut_off[[s]] # scheme-specific cut-off
+
+        cpgs <- cpgs_scheme[[s]]
+
+        # There might be schemes that do not have any probes on certain
+        # chromosomes -->> don't call findCpGsnearSNP() in these cases, just
+        # return NULL
+
+        # Use function to get a df containing the ID and start coord of all the
+        # nearby EWAS probes.
+        nearby_cpgs_s <- HaplinMethyl::findCpGsnearSNP(
+          snp = snp_df_i
+          , cpgs = 
+            cpgs
+            # cpgs_scheme[ cpgs_scheme$scheme == scheme_s, c( "id", "coord" ) ]
+          , range = cut_off_s )
+      })
+      # Make resulting list, with one list element per scheme, into df:
+      scheme_probes_nearby_snp <- dplyr::bind_rows( scheme_probes_nearby_snp )
+
+      # If findCpGsnearSNP() returns NULL for all schemes, create data frame
+      # with snp id and id/coord = NA
+      if( nrow(scheme_probes_nearby_snp) == 0 ){
+        scheme_probes_nearby_snp <- data.frame(id = NA, coord = NA, snp = snp_df_i$marker)
+        # nearby_cpgs_i <- data.frame(id = NA, coord = NA, snp = snp_df_i$marker)
+      } else {
+        # If there was at least one nearby probe across all schemes,
+        # add column with snp id to the data frame:
+        scheme_probes_nearby_snp$snp <- snp_df_i$marker
+        # nearby_cpgs_i <- scheme_probes_nearby_snp
+        # nearby_cpgs_i$snp <- snp_df_i$marker
+      }
+
+      # Return data frame:
+      return( scheme_probes_nearby_snp )
+      # return( nearby_cpgs_i )
+    })
+  ) #system.time
+}
+invisible( gc() ) # garbage collection
+length(probes_nearby_snp)
+
+probes_nearby_snp <- dplyr::bind_rows( probes_nearby_snp )
+dim(probes_nearby_snp)
+head(probes_nearby_snp)
+
+message( "Pairing completed." )
+```
+
+
+
+## Some preliminary checks and summaries of the resulting data frame
+
+```{r }
+# Check that the resulting df contains all the SNPs from the list:
+stopifnot(
+  "'probes_nearby_snp' does not contain all the snp ids from 'snp_list'!" =
+    all( snp_list$snp %in% probes_nearby_snp$snp )
+)
+
+# Summary of probes_nearby_snp (all schemes; no grouping)
+probes_nearby_snp %>% summarise( 
+  "N rows" = n()
+  , "N unique SNPs" = n_distinct( snp )
+  , "N SNPs with zero probes within cut-off" = sum( is.na(id))
+  , "N unique probe IDs" = n_distinct( id ) 
+  , "N unique combinations of probe ID and SNP ID" = n_distinct( id, snp ) 
+) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = everything(), use_seps = TRUE) %>%
+  tab_header( 
+    title =  md( paste0( 
+      "Summary of `probes_nearby_snp`, containing all the SNPs on chromosome "
+      , params$chr_number
+      , " and the EWAS probes that are within  
+      "
+      , paste0( prettyNum(params$cut_off, big.mark = ","), collapse = " / ")
+      , " bp from the SNPs"
+    ) 
+    )
+  ) %>% 
+  opt_align_table_header( "left" ) 
+
+# SNP per CpG:
+probes_nearby_snp %>% 
+  group_by( id ) %>% 
+  mutate( n_snps_per_probe_id = n_distinct(snp) ) %>% 
+  ungroup() %>% 
+  select( id, n_snps_per_probe_id ) %>% 
+  distinct() %>% 
+  summary.data.frame() %>% 
+  as.data.frame.matrix() %>%
+  mutate_all( ~ifelse( is.na(.x), yes = "", no = .x) ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "small") %>%
+  tab_header( title = md("The number of SNPs per CpG in `probes_nearby_snp`")
+              )
+
+# CpGs per SNP:
+probes_nearby_snp %>% 
+  group_by( snp ) %>% 
+  mutate( n_probes_per_snp = sum( !is.na(id)) ) %>% 
+  ungroup() %>% 
+  select( snp, n_probes_per_snp ) %>% 
+  distinct() %>% 
+  summary.data.frame() %>% 
+  as.data.frame.matrix() %>%
+  mutate_all( ~ifelse( is.na(.x), yes = "", no = .x) ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "small") %>%
+  tab_header( title = 
+                md("The number of 'nearby' CpGs per SNP in `probes_nearby_snp`")
+              )
+```
+
+
+# Probeless SNPs
+
+## Identify SNPs without any 'nearby' EWAS probes (**`r probes_nearby_snp %>% filter( is.na(id)) %>% distinct( snp ) %>% nrow()` SNPs in total**)
+
+SNPs in rows of `probes_nearby_snp` where `id` = `NA` do not have any scheme-assigned probes in the open interval (`snp$coord` - `r prettyNum(params$cut_off, big.mark = ",")`, `snp$coord` + `r prettyNum(params$cut_off, big.mark = ",")`).
+
+```{r}
+message(
+  "There are "
+  , probes_nearby_snp %>% filter( is.na(id)) %>% nrow()
+  , " SNPs without any 'nearby' EWAS probes within the specified cut-off(s)."
+  )
+# Remember that 'id' = ewas probe ID.
+
+# Make data frame with just the snps without nearby probes:
+snps_without_probes <- probes_nearby_snp %>%
+  filter( is.na(id))
+dim(snps_without_probes)
+head(snps_without_probes)
+
+if( nrow(snps_without_probes) > 0 ){
+  # Check that the data frame does not contain duplicates of snp id:
+  stopifnot(
+    "There are duplicate SNP IDs in 'snps_without_probes'" =
+      !any( duplicated(snps_without_probes$snp) %in% TRUE )
+  )
+}
+```
+
+
+## Export probeless SNPs as tsv file for later reference
+
+```{r}
+# Create df with probeless snps and exclusion_reason column:
+snps_without_probes %<>%
+  select( snp ) %>%
+  distinct() %>%
+  arrange( snp ) %>%
+  # Ensure all the letter prefixes are in upper case to match PLINK filesets:
+  mutate( snp = toupper(snp) ) %>% 
+  # Add why snp is to be removed for later overview:
+  mutate( exclusion_reason =
+            "no scheme-assigned ewas probes within cut_off basepairs"
+  )
+dim( snps_without_probes )
+
+snps_without_probes %>% 
+  summarise( n(), n_distinct(snp) ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small") %>%
+  tab_header( title = md("Summary of `snps_without_probes`") )
+
+snps_without_probes %>% 
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small") %>%
+  tab_header( title = md("`head(snps_without_probes)`") )
+
+# Export the SNPs to a tsv file:
+# (which also can be useful for later reference/checks)
+snps_without_probes %>%
+  readr::write_tsv( .
+                    , file = probeless_snps_path
+                    , col_names = TRUE
+  )
+```
+
+
+# SNP list - update and export 
+
+Generate updated version of the SNP list from 0202 reflecting the the recent removal of probeless SNPs.  
+
+## Update SNP list
+
+```{r}
+message( "Removing any SNPs without nearby EWAS probes from SNP list...")
+snp_list %>% 
+  summarise( "N rows before removing probeless SNPs" = n()
+             , "N unique SNPs before removing probeless SNPs" = n_distinct(snp) )
+
+# Remove the probeless SNPs:
+snp_list %<>% 
+  filter( !(snp %in% snps_without_probes$snp ) )
+
+snp_list %>% 
+  summarise( "N rows after removing probeless SNPs" = n()
+             , "N unique SNPs after removing probeless SNPs" = n_distinct(snp) )
+```
+
+
+## Export updated SNP list
+
+```{r}
+message( "Exporting updated snp list (", updated_snp_list_path, ")...")
+# Export to feather file:
+snp_list %>% feather::write_feather( ., path = updated_snp_list_path )
+
+# Metadata
+metadata <- file.info( updated_snp_list_path
+                       , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "SNP list metadata - Chromosome ", params$chr_number))
+  )
+```
+ 
+
+
+# SNP x SL pairings - Create data frame and export 
+
+Generate a data frame containing only unique combinations of  
+  
+1) ID of a SNP with at least one "nearby" scheme-assigned probe, and   
+  
+2) the state locus/loci (`state_locus` (SL); unique identifier for genomic interval annotated with a scheme-specific chromatin state) containing the "nearby" scheme-assigned probe(s) that have been paired with the SNP.
+    
+3) the name of the scheme (`scheme`) of the scheme-assigned nearby probes that have been paired with the SNP.
+  
+**Note that these are not the *final* SNP x SL pairings** that will be used in the analyses. It is merely a rough first selection.  
+  
+## Reasons for exporting a data frame with unique combinations of `snp`, `state_locus` and `scheme` instead of `snp`, `probe_id` and `scheme`
+  
+  
+1) (This results in smaller files.)  
+  
+2) Later, when making the final selection (per SNP) of the EWAS probes that will be used to calculate summarized beta values for a particular stratification scheme, we want to select entire state loci/clusters.  
+In some cases, a "nearby" probe can belong to a state locus with a start or end coordinate which is more than `r prettyNum(params$cut_off, big.mark = ",")` basepairs away from the SNP. The part of the state locus that is outside of the "search area" can contain EWAS probes that were not paired with the SNP due to being just a little too far away. These EWAS probes can be paired with the SNP if we use `state_locus` as a joining key instead of `probe_id`.
+  
+\  
+One can view a `state_locus` as a "regulatory feature" or a type of "CpG cluster".  
+
+
+## Make `snp`, `state_locus` and `scheme` key 
+
+Add the `state_locus` and `scheme` columns from `probes` using a left join. 
+
+```{r}
+# FIRST, MAKE A snp AND probe_id KEY
+snp_probe_pairing <- probes_nearby_snp %>% 
+  # Remove the probeless SNPs
+  filter( !is.na(id) ) %>% 
+  # Select only snp and probe id columns:
+  select( snp, probe_id = id ) %>% 
+  distinct()
+
+dim( snp_probe_pairing )
+head( snp_probe_pairing )
+
+# Summary of snp-probe key:
+snp_probe_pairing %>% 
+  summarise( "N rows" = n()
+             , "N unique SNPs" = n_distinct(snp)
+             , "N unique EWAS probes" = n_distinct(probe_id)
+             , "N unique combinations of SNP ID and EWAS probe ID" = 
+               n_distinct(snp, probe_id)
+  ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  fmt_integer() %>%
+  tab_header( 
+    title =  md( paste0("Summary of `snp` and `probe_id` key - Chromosome "
+                        , params$chr_number) )
+    ) %>% 
+  opt_align_table_header( "left" )
+
+# SECOND, ADD state_locus AND scheme TO THE KEY
+snp_probe_pairing %<>% 
+  dplyr::left_join( . 
+                    , probes %>% select( probe_id, state_locus, scheme ) %>% distinct()
+                    , by = "probe_id"
+  )
+
+dim( snp_probe_pairing )
+head( snp_probe_pairing )
+snp_probe_pairing %>% 
+  summarise( "N rows" = n()
+             , "N unique SNPs" = n_distinct(snp)
+             , "N unique EWAS probes" = n_distinct(probe_id)
+             , "N unique combinations of SNP ID and state locus" = 
+               n_distinct(snp, state_locus)
+             , "N unique combinations of SNP ID, state locus and scheme" = 
+               n_distinct(snp, state_locus, scheme)
+  ) 
+
+# THIRD, MAKE A KEY BY REMOVING probe_id AND USING ONLY UNIQUE COMBINATIONS OF
+# snp, state_locus AND scheme
+
+snp_state_locus_pairing <- snp_probe_pairing %>% 
+  select( -probe_id ) %>% 
+  distinct()
+dim( snp_state_locus_pairing )
+head( snp_state_locus_pairing )
+
+
+# Summary of snp-state locus key:
+snp_state_locus_pairing %>% 
+  summarise( "N rows" = n()
+             , "N unique SNPs" = n_distinct(snp)
+             , "N unique state loci" = n_distinct(state_locus)
+             , "N unique schemes" = n_distinct(scheme)
+             , "N unique combinations of SNP ID and state locus" = 
+               n_distinct(snp, state_locus)
+             , "N unique combinations of SNP ID, state locus and scheme" = 
+               n_distinct(snp, state_locus, scheme)
+  ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  fmt_integer( . , columns = everything(), use_seps = TRUE) %>%
+  tab_header( 
+    title =  md( paste0("Summary of `snp` and `state_locus` key - Chromosome "
+                        , params$chr_number) )
+    , subtitle = md("`state_locus` is the unique identifier of the genomic 
+                    interval, containing a scheme-assigned probe, that is 
+                    annotated with a scheme-specific 
+                    state by Vu & Ernst.")
+    ) %>% 
+  opt_align_table_header( "left" )
+
+```
+
+
+## Export SNP-state locus pairings (`snp` and `state_locus` key)
+
+```{r}
+message( "Exporting ", snp_state_loci_pairings_path, "...")
+# Export to feather file:
+snp_state_locus_pairing %>% 
+  feather::write_feather( ., path = snp_state_loci_pairings_path )
+
+# Metadata
+metadata <- file.info( snp_state_loci_pairings_path
+                       , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "SNP-probe pairing metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+# Scheme-assigned EWAS probes - Update and export 
+
+Produce an updated version of the list of scheme-assigned EWAS probe from 0405, where any probes that are **not** located within a state locus found in `snp_state_locus_pairing` have been removed.
+**Note** that the updated list can contain EWAS probes that are more than the cut-off number of basepairs away from its closest SNP. This happens when an EWAS probe is located in a state locus that also contains one or more other EWAS probes that are within the specified cut-off of one or more SNPs.      
+
+
+## Identify scheme-assigned EWAS probes from 0405 that were not paired with any SNPs (via their state loci)
+
+```{r}
+# Get the probes with "pairingless" state loci:
+probes_with_pairingless_sl <- probes %>% 
+  filter( !(state_locus %in% snp_state_locus_pairing$state_locus ) )
+
+# Check that none of the probes with pairingless state loci are present in
+# 'snp_probe_pairing':
+stopifnot(
+  all( !( probes_with_pairingless_sl$probe_id %in% snp_probe_pairing$probe_id) )
+)
+# Check that none of the pairingless state loci in 'probes_with_pairingless_sl'
+# are present in 'snp_probe_pairing':
+stopifnot(
+  all( !( probes_with_pairingless_sl$state_locus %in%
+            snp_probe_pairing$state_locus) )
+)
+```
+
+
+## Export EWAS probes with "pairingless" state loci as tsv file for later reference
+
+```{r}
+# Create df with probeless snps and exclusion_reason column:
+probes_with_pairingless_sl %<>%
+  distinct( probe_id, state_locus ) %>%
+  arrange( state_locus, probe_id ) %>% 
+  # Add why probe is to be removed for later overview:
+  mutate(
+    exclusion_reason =
+      "state locus has no ewas probes within cut_off basepairs of a SNP"
+  )
+dim( probes_with_pairingless_sl )
+
+probes_with_pairingless_sl %>% 
+  summarise( n()
+             , n_distinct(probe_id, state_locus)
+             , n_distinct(probe_id)
+             , n_distinct(state_locus)
+  ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small") %>%
+  tab_header( title = md("Summary of `probes_with_pairingless_sl`") )
+
+probes_with_pairingless_sl %>% 
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small") %>%
+  tab_header( title = md("`head(probes_with_pairingless_sl)`") )
+
+# Export the SNPs to a tsv file:
+# (which also can be useful for later reference/checks)
+probes_with_pairingless_sl %>%
+  readr::write_tsv( .
+                    , file = probes_with_pairingless_sl_path
+                    , col_names = TRUE
+  )
+```
+
+
+## Update scheme-assigned EWAS probes
+
+```{r}
+message( "Updating scheme-assigned EWAS probes...")
+probes %>% 
+  summarise(
+    "N rows before removing probes with pairingless state loci" = n()
+    , n_distinct(probe_id) 
+    , n_distinct(state_locus) 
+    , n_distinct(scheme, probe_id, state_locus)
+    ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( 
+    title = md(
+      "Summary of `probes` before removing probes with pairingless state loci"
+    ) )
+
+probes %<>% 
+  filter( !( probe_id %in% probes_with_pairingless_sl$probe_id ) )
+
+probes %>% 
+  summarise(
+    "N rows *after* removing probes with pairingless state loci" = n()
+    , n_distinct(probe_id) 
+    , n_distinct(state_locus) 
+    , n_distinct(scheme, probe_id, state_locus)
+    ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( 
+    title = md(
+      "Summary of `probes` **after** removing probes with pairingless state loci"
+    ) )
+```
+
+
+## Export updated scheme-assigned EWAS probes
+
+```{r}
+message( "Exporting updated scheme-assigned EWAS probes ("
+         , updated_ewas_all_scheme_probes_path
+         , ")..." )
+# Export to feather file:
+probes %>%
+  feather::write_feather( ., path = updated_ewas_all_scheme_probes_path )
+
+# Metadata
+metadata <- file.info( updated_ewas_all_scheme_probes_path
+                       , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "Updated scheme-assigned EWAS probes list - Chromosome "
+                       , params$chr_number)
+    ) )
+```
+ 
+
+# Check distances between probes and SNPs
+
+```{r}
+probes_nearby_snp %<>% 
+  # Remove the probeless SNPs
+  filter( !is.na(id) ) %>% 
+  # Select only snp and probe id columns:
+  select( snp, probe_id = id, probe_coord = coord ) %>% 
+  distinct() %>% 
+  # Add SNP coord from snp list:
+  dplyr::left_join( . , snp_list, by = "snp" ) %>%
+  # Calculate distance between snp and probe:
+  mutate( abs_distance_snp_probe = abs( snp_coord - probe_coord ) ) %>% 
+  # Add scheme names:
+  dplyr::left_join( . 
+                    , probes %>% select( probe_id, probe_coord, scheme )
+                    , by = c("probe_id", "probe_coord")
+  ) 
+
+# If only one universal cut-off:
+if( length( unique( cut_off )) == 1 ){
+  
+  probes_nearby_snp %>%
+  summarise( "N rows" = n()
+             , "N unique snps" = n_distinct( snp )
+             , "N unique probes" = n_distinct( probe_id )
+             , "Min. basepairs from SNP to probe" = min( abs_distance_snp_probe)
+             , "Max. basepairs from SNP to probe" = max( abs_distance_snp_probe)
+             , "Median basepairs from SNP to probe" = 
+               median( abs_distance_snp_probe)
+             , "Mean basepairs from SNP to probe" = 
+               mean( abs_distance_snp_probe)
+             ) %>% 
+  gt::gt() %>% 
+    fmt_integer( . , columns = everything(), use_seps = TRUE) %>% 
+    tab_options( table.font.size = "small")
+  
+} else {
+  # If user specified scheme-specific cut-offs:
+  
+  probes_nearby_snp %>%
+    # Add scheme-specific cut-off:
+    left_join( . , cut_off_info_df, by = "scheme" ) %>%
+    # Make scheme summary statistics:
+    group_by( scheme ) %>% 
+    summarise( "N rows" = n()
+               , "N unique snps" = n_distinct( snp )
+               , "N unique probes" = n_distinct( probe_id )
+               , "User-specified cut-off" = 
+                 prettyNum( unique( cut_off ), big.mark = "," )
+               , "Min. basepairs from SNP to probe" = min( abs_distance_snp_probe)
+               , "Max. basepairs from SNP to probe" = max( abs_distance_snp_probe)
+               , "Median basepairs from SNP to probe" = 
+                 median( abs_distance_snp_probe)
+               , "Mean basepairs from SNP to probe" = 
+                 mean( abs_distance_snp_probe)
+    ) %>% 
+    gt::gt() %>% 
+    fmt_integer() %>% 
+    # fmt_integer( . , columns = c(2:4,6:8), use_seps = TRUE) %>% 
+    tab_options( table.font.size = "small") %>% 
+    opt_row_striping()
+  
+}
+  
+```
+
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

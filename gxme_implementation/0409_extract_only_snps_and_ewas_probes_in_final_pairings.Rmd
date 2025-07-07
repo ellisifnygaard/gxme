@@ -1,0 +1,1304 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # chr_number: 18
+  chr_number: 4
+  # (root_dir = the chromosome subdirectory)
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  root_dir: "C:/Temp/edj079/2025-03-24_pipeline_dir/chromosomes/Chr04"
+    
+  # EWAS fileset to subset:
+  # ewas_fileset_dir: "0301" # "hard-code" 0301 dir
+  # ewas_fileset_name: "0301_ewas" # "hard-code" 0301_ewas fileset
+  
+  # EWAS probe list from preceding stage: Depends on mQTL filtering procedure!
+  # (ewas_probe_list_from_previous_stage_path) 
+    
+  # Files with the EWAS probes that were excluded post-QC:
+  # ewas_probes_wo_annotations_path: "0401/0401_ewas_probes_without_annotations.tsv" # "hard-code"
+  # ewas_probes_wo_scheme_path: "0404/0404_ewas_probes_without_scheme.tsv" # "hard-code"
+  # ewas_probes_w_pairingless_sl_path: "0406/0406_ewas_probes_with_pairingless_sl.tsv" # "hard-code"
+  # ewas_probes_removed_by_mqtl_filter_path: "0407/0407_ewas_probes_removed_by_mqtl_filter.tsv" # "hard-code"
+
+    
+  # GWAS file to subset:
+  # gwas_fileset_dir: "0201" # "hard-code" 0201 dir
+  # gwas_fileset_name: "0201_gwas" # "hard-code"  0201_gwas fileset
+
+  # PLINK memory (OPTIONAL):
+  # (to be used with the "--memory" flag)
+  # Can be used to ensure that PLINK has enough RAM for its main workspace.
+  plink_memory_mb: !r NA
+  # plink_memory_mb: 500
+  # plink_memory_mb: 42147
+  
+  # PLINK timeout 
+  # (maximum number of seconds a call to plink.exe can take before it's stopped)
+  plink_timeout: 300
+  
+  # ARGUMENT SIGNALLING THAT THE ANALYSES ARE REPLICATION ANALYSES
+  replication_analysis: FALSE # default = FALSE
+  
+  stage_dir: "0409"
+title: "`r paste0('0409 - Remove any pairingless SNPs and EWAS probes from the GWAS and EWAS filesets, respectively - Chromosome ', params$chr_number) `"
+---
+
+
+<!-- # DEV -->
+<!-- ```{r eval=FALSE} -->
+<!-- setwd(params$root_dir) -->
+<!-- ``` -->
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# Stage directory:
+stage_dir <- params$stage_dir
+
+
+#------  EWAS fileset  ------
+ewas_fileset_dir <- "0301" # "hard-code" 0301 dir
+ewas_fileset_name <- "0301_ewas" # "hard-code" 0301_ewas fileset
+
+#------  EWAS probe list from preceding stage  ------
+ewas_probe_list_from_previous_stage_path <-
+  file.path( "0407", "0407_scheme_probes.feather" )
+
+# Specify path to export the file with all ewas probes to be removed to
+exclude_ewas_probes_path <-
+  file.path( stage_dir, paste0( stage_dir, "_exclude_ewas_probes.tsv" ) )
+
+#------  Excluded EWAS probes  ------
+# File paths for tsv files with excluded EWAS probes:
+# "hard-code" paths to ewas probes to be excluded:
+ewas_probes_wo_annotations_path <-
+  file.path( "0401", "0401_ewas_probes_without_annotations.tsv" )
+ewas_probes_wo_scheme_path <-
+  file.path( "0404", "0404_ewas_probes_without_scheme.tsv" )
+ewas_probes_w_pairingless_sl_path <-
+  file.path( "0406", "0406_ewas_probes_with_pairingless_sl.tsv" )
+ewas_probes_removed_by_mqtl_filter_path <-
+    file.path( "0407", "0407_ewas_probes_removed_by_mqtl_filter.tsv" )
+
+#------  Excluded SNPs  ------
+# File path for tsv files with excluded SNPs:
+snps_removed_by_mqtl_filter_path <-
+  file.path( "0407", "0407_snps_removed_by_moderate_mqtl_filter.tsv" )
+
+probeless_snps_path <- file.path( "0406", "0406_probeless_snps.tsv" )
+
+
+# THE SNP LIST FROM THE PREVIOUS STAGE
+
+# Specify path to the last SNP list that was generated before this stage
+snp_list_previous_stage_path <- file.path( "0407", "0407_snp_list.feather" )
+
+# THE SNP x SL PAIRINGS FROM THE PREVIOUS STAGE
+
+# Specify path to the last SNP x SL list that was generated before this stage
+snp_sl_pairings_previous_stage_path <-
+  file.path( "0407", "0407_snp_state_loci.feather" )
+
+
+#------  GWAS fileset  ------
+# Fileset from QC stage:
+gwas_fileset_dir <- "0201" # "hard-code" 0201 dir
+gwas_fileset_name <- "0201_gwas" # "hard-code"  0201_gwas fileset
+gwas_fileset_path <- file.path( gwas_fileset_dir, gwas_fileset_name )
+
+# Path for subsetted/copied GWAS data (minus file extensions):
+gwas_stage_dir_path <- file.path( stage_dir, paste0( stage_dir, "_gwas" ) )
+
+#-------  PLINK-related  -------
+
+# Plink memory:
+plink_memory_mb <- params$plink_memory_mb
+
+# TIMEOUT WHEN CALLING PLINK VIA system()
+plink_timeout <- params$plink_timeout
+
+
+#-------  Replication analysis  -------
+# ARGUMENT SIGNALLING THAT THE ANALYSES ARE REPLICATION ANALYSES
+replication_analysis <- params$replication_analysis
+
+
+#-------  Paths to generated files  -------
+
+# Path to file with SNPs to remove:
+plink_exclude_snps_path <-
+  file.path( stage_dir, paste0( stage_dir, "_plink_exclude_snps.tsv" ) )
+
+
+# Path to "master file" with all the pairings (i.e. SNP x state_locus x probe_id
+# x scheme combinations) that "survived" the mQTL filtering that will be
+# analysed later in stage 07
+all_snp_sl_probe_id_scheme_combos_path <- file.path(
+  stage_dir,
+  paste0( stage_dir
+          , "_all_snp_x_state_locus_x_ewas_probe_x_scheme_pairings.feather")
+)
+
+```
+
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+-   `r  paste0( ewas_fileset_dir, "/", ewas_fileset_name, ".ffdata/RData" )`
+  
+-   `r  ewas_probes_wo_annotations_path`
+  
+-   `r  ewas_probes_wo_scheme_path`
+  
+-   `r  ewas_probes_w_pairingless_sl_path`
+  
+-   `r  ewas_probes_removed_by_mqtl_filter_path`
+  
+-   `r  ewas_probe_list_from_previous_stage_path`
+  
+  
+-   `r  paste0( gwas_fileset_dir, "/", gwas_fileset_name, ".bim" )`
+  
+-   `r snps_removed_by_mqtl_filter_path`  
+  
+-   `r probeless_snps_path`  
+  
+-   `r snp_list_previous_stage_path`
+
+## Files produced by this script
+
+-   `r  exclude_ewas_probes_path`   
+  
+-   `r paste0(stage_dir, "/", stage_dir, "_ewas_env.ffData/RData")`
+  
+-   `r paste0(stage_dir, "/", stage_dir, "_ewas_env.ffData/RData")`
+  
+- `r plink_exclude_snps_path`  
+
+- `r paste0( gwas_stage_dir_path, ".bim/bed/fam")` 
+  
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  # , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+options(scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(gt)
+library(HaplinMethyl)
+library(magrittr)
+library(readr)
+```
+
+# Import SNP x State Locus pairings
+
+We will use to check that our final EWAS and GWAS filesets contain the correct EWAS probes and SNPs (together with the EWAS probe list).
+
+```{r}
+snp_sl <- feather::read_feather( snp_sl_pairings_previous_stage_path )
+
+data.table::setDT(snp_sl)
+snp_sl
+snp_sl %>% arrange(snp)
+snp_sl %>% dim()
+snp_sl %>%
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+snp_sl %>%
+  summarise( n()
+             , n_distinct(snp, state_locus, scheme )
+             , n_distinct(snp, state_locus)
+             , n_distinct(snp), n_distinct(state_locus)
+             ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+```
+
+
+
+# Subset EWAS Data
+
+## EWAS probes to be removed from EWAS fileset
+
+```{r}
+# Import all files with EWAS probes excluded/earmarked for removal post-QC:
+ewas_probes_wo_annotations <-
+  readr::read_tsv( ewas_probes_wo_annotations_path, show_col_types = FALSE ) %>% 
+  select( probe_id, exclusion_reason )
+
+ewas_probes_wo_scheme <-
+  readr::read_tsv( ewas_probes_wo_scheme_path, show_col_types = FALSE ) %>% 
+  select( probe_id, exclusion_reason )
+
+ewas_probes_w_pairingless_sl <-
+  readr::read_tsv( ewas_probes_w_pairingless_sl_path
+                   , show_col_types = FALSE ) %>% 
+  select( probe_id, exclusion_reason )
+
+ewas_probes_removed_by_mqtl_filter <-
+  readr::read_tsv( ewas_probes_removed_by_mqtl_filter_path
+                   , show_col_types = FALSE ) %>% 
+  select( probe_id, exclusion_reason )
+
+    
+# Combine all files:
+ewas_probes_excluded_post_qc <- dplyr::bind_rows(
+  ewas_probes_wo_annotations
+  , ewas_probes_wo_scheme
+  , ewas_probes_w_pairingless_sl
+  , ewas_probes_removed_by_mqtl_filter
+)
+rm(ewas_probes_wo_annotations
+   , ewas_probes_wo_scheme
+   , ewas_probes_w_pairingless_sl
+   , ewas_probes_removed_by_mqtl_filter
+)
+
+# Stop if there are duplicates of probe ID (if this occurs, something has gone
+# wrong in 0401, 0404, 0406 and/or 0407)
+stopifnot(
+  nrow( ewas_probes_excluded_post_qc %>% distinct(probe_id)) == 
+    nrow( ewas_probes_excluded_post_qc )
+)
+
+ewas_probes_excluded_post_qc %>% 
+  count( exclusion_reason ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>%
+  tab_header( title = md("Distribution of probes per exclusion reason in 
+                         `ewas_probes_excluded_post_qc`" ) )
+
+# Export the df with all the probes we want to remove to a tab delimited file:
+ewas_probes_excluded_post_qc %>% 
+  readr::write_tsv( .
+                    , file = exclude_ewas_probes_path
+                    , col_names = TRUE
+  )
+```
+
+
+## Import EWAS data from 0301 
+
+```{r}
+ewas <- HaplinMethyl::envDataLoad( 
+  filename =  ewas_fileset_name
+  , dir.in = ewas_fileset_dir
+)
+invisible( gc() ) # garbage collection
+dim( ewas[[1]] )
+
+# Row names = CpG IDs
+rownames(ewas[[1]]) %>% head()
+ewas_probes <- rownames(ewas[[1]])
+
+message(
+  "Prior to removing EWAS probes that were earmarked for removal post-QC, \n"
+  , "the EWAS data contains "
+  , prettyNum( nrow(ewas[[1]]), big.mark = "," )
+  , " probe IDs."
+)
+
+```
+
+
+## Identify probe IDs to extract
+
+```{r}
+# The probe IDs present in the QC-ed EWAS fileset:
+length( ewas_probes )
+head( ewas_probes )
+
+# The probe IDs to be removed from the QC-ed EWAS fileset:
+length( ewas_probes_excluded_post_qc$probe_id )
+head( ewas_probes_excluded_post_qc$probe_id )
+
+
+# The probe IDs to keep going forward:
+# (probes present in QC-ed fileset, but not in df with probes to be removed)
+ewas_probes_keep <-
+  base::setdiff( ewas_probes, ewas_probes_excluded_post_qc$probe_id)
+length( ewas_probes_keep )
+
+# Stop unless the # of probes to keep = (the # of probes post-QC) -
+#                                       (the # of probes earmarked for removal)
+stopifnot(
+  length( ewas_probes_keep ) ==
+    length( ewas_probes ) - length( ewas_probes_excluded_post_qc$probe_id )
+)
+
+
+# Check that the probe IDs present in the QC-ed EWAS fileset, BUT NOT present in
+# the probe list from the preceding stage, are identical to the probes
+# earmarked for removal.
+probe_list <- feather::read_feather(
+  ewas_probe_list_from_previous_stage_path
+)
+probe_list %>% dim()
+ewas_probes_from_previous_stage <- probe_list %>%
+  distinct(probe_id) # ensure only unique IDs
+stopifnot(
+  all( base::setdiff( ewas_probes, ewas_probes_from_previous_stage$probe_id) %in%
+    ewas_probes_excluded_post_qc$probe_id )
+)
+```
+
+
+## Subset the EWAS data
+
+Use `probes_keep` to extract the probes that passed our QC.  
+
+```{r}
+# Temporary workaround due to bug in HaplinMethyl::envDataSubset() The code
+# breaks when using envDataSubset to extract only one CpG. So if
+# ewas_probes_keep contains only one CpG, I have to add an additional random CpG
+# in order to perform the subsetting. Hopefully this will not create bugs
+# downstream in the pipeline...
+ewas_probes_keep_length <- length(ewas_probes_keep)
+if( ewas_probes_keep_length == 1 ){
+  warning( "ewas_probes_keep contains only one CpG.\nAdd another random CpG from"
+           , " ewas_probes to ewas_probes_keep to avoid error when running "
+           , "HaplinMethyl::envDataSubset().\n" )
+  # Choose a CpG that is not already selected:
+  random_row <- sample(
+    x = setdiff(1:length(ewas_probes), which( ewas_probes == ewas_probes_keep ))
+    , size = 1 )
+  random_row
+  additional_probe <- ewas_probes[ random_row ]
+  additional_probe
+  stopifnot( additional_probe != ewas_probes_keep )
+  # Add this additional probe to ewas_probes_keep:
+  warning( "ewas_probes_keep before: ", ewas_probes_keep )
+  ewas_probes_keep <- c(ewas_probes_keep, additional_probe)
+  warning( "ewas_probes_keep after: "
+           , paste0( ewas_probes_keep, collapse = ", " ) )
+}
+
+ewas_subset <- HaplinMethyl::envDataSubset(
+  ewas
+  , row.names = ewas_probes_keep 
+  , file.out = paste0( stage_dir, "_ewas" )
+  , dir.out = stage_dir
+  , overwrite = TRUE
+)
+dim(ewas_subset[[1]])
+ewas_subset_probes <- rownames( ewas_subset[[1]] )
+
+# No longer needed:
+rm(ewas, ewas_subset); invisible( gc() )
+```
+
+
+## Check the subsetted data
+
+  
+```{r}
+# None of the probe IDs in ewas_subset should be present among the probe IDs
+# earmarked for removal post-QC:
+if( ewas_probes_keep_length > 1 ){ # skip if an extra probe was added keep list
+  stopifnot(
+    any( ewas_subset_probes %in% ewas_probes_excluded_post_qc$probe_id ) == FALSE
+  )
+}
+
+
+# Import the exported subsetted EWAS fileset to get the probe IDs in the newly
+# exported EWAS fileset:
+ewas_subset_exported <- HaplinMethyl::envDataLoad( 
+  filename =  paste0( stage_dir, "_ewas" )
+  , dir.in = stage_dir
+)
+
+ewas_subset_exported_probes <- 
+  summary( ewas_subset_exported, short = FALSE )$rownames
+# No longer needed:
+rm(ewas_subset_exported); invisible( gc() )
+invisible( gc() ) # garbage collection
+
+# Check that ewas_subset and ewas_subset_exported contain the exact same probe
+# IDs (i.e. that envDataSubset works as it should)
+stopifnot( all( ewas_subset_exported_probes == ewas_subset_probes ) )
+stopifnot( all( ewas_subset_exported_probes == ewas_probes_keep ) )
+
+
+# Number of probes in ewas_subset + number of probes to remove = total
+# number of probes in EWAS data from 0301:
+if( ewas_probes_keep_length > 1 ){ # skip if an extra probe was added keep list
+  stopifnot(
+    ( length( ewas_subset_probes ) +
+        length( ewas_probes_excluded_post_qc$probe_id ) ) == 
+      length( ewas_probes )
+  )
+}
+
+# Check if the newly exported EWAS data contains the exact same probes as the
+# ones determined by the probe list and the SNP x SL pairings from the previous
+# stage
+
+# First, check that probe_list and snp_sl contain the exact same state loci:
+stopifnot(
+  "The SNP x SL pairings and the EWAS probe list from the previous stage must contain the exact same state locus IDs." =
+    all( 
+      sort( unique( probe_list$state_locus ) ) == 
+        sort( unique( snp_sl$state_locus ) ) 
+    )
+)
+
+# Then, check if the newly exported EWAS data contains the exact same probe IDs
+# as the probe list:
+if( ewas_probes_keep_length > 1 ){ # skip if an extra probe was added keep list
+  stopifnot(
+    "The exported EWAS fileset must contain exactly the same set of probe IDs as the probe list from the previous stage." =
+      all( sort( unique( probe_list$probe_id ) ) ==
+             sort( ewas_subset_exported_probes ) )
+  )
+}
+```
+
+
+## Metadata EWAS fileset 
+
+```{r}
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = paste0( stage_dir, "_ewas") 
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "PLINK files metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+
+# Subset GWAS Data
+
+## Identify SNPs to be removed from GWAS fileset
+
+```{r}
+# Import all files:
+snps_removed_by_mqtl_filter <- readr::read_tsv(
+  snps_removed_by_mqtl_filter_path, show_col_types = FALSE
+) %>% 
+  select( snp, exclusion_reason )
+dim( snps_removed_by_mqtl_filter )
+
+probeless_snps <-
+  readr::read_tsv( probeless_snps_path, show_col_types = FALSE ) %>% 
+  select( snp, exclusion_reason )
+dim( probeless_snps )
+
+# Combine all files:
+snps_excluded_post_qc <- dplyr::bind_rows(
+  snps_removed_by_mqtl_filter
+  , probeless_snps
+)
+dim( snps_excluded_post_qc )
+rm( snps_removed_by_mqtl_filter, probeless_snps )
+
+# Stop if there are duplicates of SNP ID (if this occurs, something has gone
+# wrong in 0203/0407, and/or 0406)
+stopifnot(
+  nrow( snps_excluded_post_qc %>% distinct(snp)) == 
+    nrow( snps_excluded_post_qc )
+)
+
+snps_excluded_post_qc %>% 
+  count( exclusion_reason ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer() %>%
+  tab_header( title = md("Distribution of SNPs per exclusion reason in 
+                         `snps_excluded_post_qc`" ) )
+
+# Check that none of the SNPs to be removed are present in the SNP list from the
+# previous stage
+snp_list_prev_stage <- feather::read_feather( snp_list_previous_stage_path )
+stopifnot( 
+  "There are SNPs earmarked for removal during stage 04 that are still present 
+  in the SNP list from the preceding stage. 
+  Has the same mQTL filtering procedure been used up until now?" =
+    all( !(snps_excluded_post_qc$snp %in% snp_list_prev_stage$snp) ) 
+)
+# This will throw an error unless all the files produced up until now have been
+# generated using the same mQTL filtering procedure.
+```
+
+
+## Export tsv file with IDs of SNP to remove for subsequent use with PLINK
+
+```{r}
+# IDs of SNPs to remove from GWAS data:
+snps_excluded_post_qc %>% 
+  distinct( snp ) %>% 
+  # Export tsv SNP IDs we want to remove from PLINK fileset
+  readr::write_tsv( 
+    .
+    , file = plink_exclude_snps_path
+    , col_names = FALSE
+  )
+```
+
+
+## Subset the data with PLINK
+
+```{r}
+# If snps_excluded_post_qc contains 0 rows/SNPs
+#         -> copy the GWAS fileset from 0201 to the stage directory
+# If snps_excluded_post_qc contains 1 or more rows/SNPs
+#         -> use PLINK to subset the GWAS data
+
+if( nrow(snps_excluded_post_qc) == 0 ){
+  
+  # If there aren't any SNPs to remove, copy fileset to stage directory
+  
+  message( "No SNPs were earmarked for removal post-QC,"
+           , " hence subsetting GWAS data with PLINK is not necessary.\n"
+           , "Copying fileset to stage directory..." )
+  from_file_paths <- list.files( 
+    path = gwas_fileset_dir
+    # Files matching regex "0201_gwas.bed|0201_gwas.bim|0201_gwas.fam"
+    , pattern =  paste0( paste0( gwas_fileset_name
+                                 , c(".bed", ".bim", ".fam") )
+                         , collapse = "|" )
+    , full.names = TRUE
+  )
+  # Make sure paths are in alphabetical order (bed>bim>fam):
+  from_file_paths <- sort(from_file_paths)
+  to_file_paths <- paste0( gwas_stage_dir_path, c(".bed", ".bim", ".fam") )
+  # Copy file to the stage directory:
+  copy_status <- file.copy( from = from_file_paths
+                            , to = to_file_paths
+                            , overwrite = TRUE
+                            , copy.date = TRUE # preserve dates if possible 
+                            )
+  invisible( gc() )
+  stopifnot( "Copying GWAS fileset to 'stage_dir' failed." = 
+               all( copy_status ) 
+  ) 
+  message("Copying GWAS fileset complete.")
+} else {
+  
+  # If there are SNPs to remove, use PLINK to subset the GWAS fileset
+  
+  message( "Removing the "
+           , nrow(snps_excluded_post_qc)
+           , " SNPs earmarked for removal post-QC...")
+  plink_command <- paste0( 
+    # chr_dir,
+    "plink "
+    # Choose merged fileset from 0202:
+    , "--bfile ", gwas_fileset_path
+    
+    # Exclude SNPs earmarked for removal during post-QC stages:
+    ,  " --exclude " , plink_exclude_snps_path
+    
+    # Export output to a binary fileset
+    ,  " --make-bed " 
+    
+    , "--out ", gwas_stage_dir_path
+    # Tell PLINK how much memory to reserve for its main workspace
+    , ifelse( is.na(plink_memory_mb)
+              , yes = "" # if not specified, don't add --memory flag
+              , no = paste0( " --memory ", plink_memory_mb ) )
+  )
+  message( "Running PLINK using the following command:\n"
+         , plink_command )
+  
+  output_msg <- system( plink_command, intern = TRUE, timeout = plink_timeout )
+  cat(output_msg, sep = "\n")
+  invisible( gc() )
+}
+```
+
+
+## Metadata PLINK fileset 
+
+```{r}
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = paste0( stage_dir, "_gwas") 
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "PLINK files metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+#  Check the newly generated PLINK fileset
+
+
+```{r}
+bim_qced_gwas_data <- readr::read_delim(
+  paste0( gwas_fileset_path, ".bim" )
+  , col_names = c( "chr", "snp", "pos", "coord", "allele_1", "allele_2" )
+  , show_col_types = FALSE
+) %>% 
+  select( snp )
+
+message( "Inspecting newly generated PLINK fileset...")
+bim_0409 <- readr::read_delim(
+  paste0( gwas_stage_dir_path, ".bim")
+  , col_names = c( "chr", "snp", "pos", "coord", "allele_1", "allele_2" )
+  , show_col_types = FALSE
+)
+
+# Stop if new fileset contains probeless SNPs:
+stopifnot(
+  "The new GWAS fileset still contains the SNPs earmarked for removal.
+    They were not removed successfully." =
+    any( snps_excluded_post_qc$snp %in% bim_0409$snp ) == FALSE
+)
+
+# Stop if new fileset is missing SNPs that were paired with probes:
+stopifnot(
+  "The new GWAS fileset is missing SNPs present in the SNP list from the previous stage. Something went wrong." =
+    all( snp_list_prev_stage$snp %in% bim_0409$snp )
+)
+
+message( paste0( paste0( gwas_stage_dir_path, c(".bed", ".bim", ".fam") )
+                 , collapse = ", " )
+         , " were successfully exported..."
+)
+
+# Check that the number of SNPs in snps_excluded_post_qc equals the difference
+# between number of SNPs in bim file resulting from QC and the number of SNPs in
+# the newly generated subsetted GWAS fileset:
+stopifnot(
+  length( snps_excluded_post_qc$snp ) == length( bim_qced_gwas_data$snp ) -
+    length( bim_0409$snp )
+)
+
+
+# Check that the list of unique SNPs from the SNP x SL pairing from the previous stage, and the list of SNPs in the newly generated GWAS fileset are identical 
+stopifnot(
+  "The final subsetted PLINK fileset must contain the exact same SNPs as the SNP x SL pairings from the previous stage." =
+    all( sort( bim_0409$snp ) == sort( unique( snp_sl$snp ) ) )
+)
+```
+
+
+# If this part of a replication study: Subset SNP x SL pairings according to `pairing_list`
+
+```{r}
+message( "replication_analysis = ", replication_analysis)
+```
+
+
+```{r repl, eval = replication_analysis}
+
+# Import pairing list from 0102R:
+pairing_list <- readr::read_csv(
+  file = file.path( root_dir, "0102R", "0102R_pairing_list.csv")
+  , show_col_types = FALSE
+)
+
+data.table::setDT(pairing_list)
+pairing_list
+
+data.table::setDT(snp_sl)
+snp_sl
+
+# Add pairing_list status column to snp_sl:
+snp_sl %<>% 
+  dplyr::left_join( 
+    .
+    , pairing_list %>%
+      select( snp, annotation_locus ) %>%
+      mutate( is_in_pairing_list = TRUE )
+    , by = c( "snp", "state_locus" = "annotation_locus" )
+    )
+snp_sl
+
+snp_sl %<>% 
+  mutate( is_in_pairing_list =
+            ifelse( is.na(is_in_pairing_list), yes = FALSE, is_in_pairing_list )
+  )
+snp_sl
+
+snp_sl %>%
+  count( is_in_pairing_list ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  tab_header( title = md( "Pairings in `snp_sl` present/not present in 
+                          `pairing_list`" ) )
+
+snp_sl %>%
+  summarise( n(), n_distinct(snp, state_locus), n_distinct(snp), n_distinct(state_locus)) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  tab_header( title = md( "`snp_sl` summary - **prior to** filtering pairings 
+                          according to `pairing_list`" ) )
+
+
+# Quick glance at pairings that will be removed:
+snp_sl %>% filter( is_in_pairing_list == FALSE )
+snp_sl %>%
+  filter( is_in_pairing_list == FALSE ) %>% 
+  summarise( n(), n_distinct(snp, state_locus), n_distinct(snp), n_distinct(state_locus)) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  tab_header( title = md( "Summary of pairings in `snp_sl` summary that are not 
+                          in `pairing_list`" ) )
+  
+
+# Remove the pairings from snp_sl that are not present among the selected
+# pairings provided via the pairing_list:
+snp_sl %<>% filter( is_in_pairing_list == TRUE )
+
+snp_sl %>%
+  summarise( n(), n_distinct(snp, state_locus), n_distinct(snp), n_distinct(state_locus)) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  tab_header( title = md( "`snp_sl` summary - **after** filtering pairings 
+                          according to `pairing_list`" ) )
+
+```
+
+
+
+
+# Summary of chromosome `r chr_number`
+
+## EWAS data
+
+```{r}
+# EWAS summary:
+tibble(
+  "Number of EWAS probes before subsetting" = length( ewas_probes )
+  , "Number of EWAS probes after subsetting" = length( ewas_subset_exported_probes )
+  , "Number of EWAS probes removed" = length( ewas_probes ) -
+    length( ewas_subset_exported_probes )
+  , "Number of EWAS probes in 'ewas_probes_excluded_post_qc'" =
+    length( ewas_probes_excluded_post_qc$probe_id )
+) %>% 
+  gt::gt() %>% 
+  fmt_integer()
+```
+
+
+## GWAS data
+
+```{r}
+# GWAS summary:
+tibble(
+  "Number of SNPs before subsetting" = length(bim_qced_gwas_data$snp)
+  , "Number of SNPs after subsetting" = length(bim_0409$snp)
+  , "Number of SNPs removed" = length(bim_qced_gwas_data$snp) -
+    length(bim_0409$snp)
+  , "Number of SNPs in 'snps_excluded_post_qc'" =
+    length( snps_excluded_post_qc$snp )
+) %>% 
+  gt::gt() %>% 
+  fmt_integer()
+```
+
+
+## SNP x SL pairings
+
+Summary of the file containing all SNP x SL pairings, as well as a look at the number of pairings per SNP.  
+
+Study these tables before proceeding with the rest of the pipeline.  
+Remember that the number of pairings in total = the number of separate times the `haplinStrat` function will be run.
+
+
+### General overview of final SNP x SL pairings - All schemes
+
+```{r}
+# General overview - Total
+snp_sl %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(state_locus)
+             , n_distinct(scheme)
+             , n_distinct(snp, state_locus, scheme )
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_header( 
+    title = md( 
+      paste0( "General overview - SNP x SL pairings on chromosome "
+              , params$chr_number ) )
+  )
+```
+
+
+### Scheme-wise overview of final SNP x SL pairings **per scheme**
+
+```{r}
+# General overview - Per scheme
+snp_sl %>% 
+  group_by( scheme ) %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(state_locus)
+             , n_distinct(scheme) ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  opt_row_striping() %>% 
+    data_color(
+    columns = c(everything(), -`n_distinct(scheme)`)
+    , rows = !(scheme == "Total") # ignore total row
+    , method = "numeric"
+    , palette = "GnBu"
+  ) %>% 
+  tab_header( 
+    title = md( 
+      paste0( "General overview **per scheme** - 
+              SNP x SL pairings on chromosome "
+              , params$chr_number ) )
+  )
+```
+
+
+### Number of pairings per SNP - All schemes
+
+```{r}
+# Number of pairings per SNP - All schemes
+snp_sl %>% 
+  group_by( snp ) %>% 
+  mutate( n_sls_per_snp = n() ) %>% 
+  ungroup() %>% 
+  distinct( snp, n_sls_per_snp ) %>% 
+  summarise( min( n_sls_per_snp )
+             , quantile( n_sls_per_snp, 0.25 )
+             , mean( n_sls_per_snp )
+             , median( n_sls_per_snp )
+             , quantile( n_sls_per_snp, 0.75 )
+             , max( n_sls_per_snp )
+             , sum( n_sls_per_snp )
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( 
+    title = md( 
+      paste0( "Number of pairings **per SNP** on chromosome "
+              , params$chr_number ) )
+  )
+```
+
+
+### Number of pairings per SNP - **per scheme** 
+
+```{r}
+# Number of pairings per SNP - Per scheme
+snp_sl %>% 
+  group_by( scheme, snp ) %>% 
+  mutate( n_sls_per_snp = n() ) %>% 
+  ungroup() %>% 
+  distinct( scheme, snp, n_sls_per_snp ) %>% 
+  group_by( scheme ) %>% 
+  summarise( min( n_sls_per_snp )
+             , quantile( n_sls_per_snp, 0.25 )
+             , mean( n_sls_per_snp )
+             , median( n_sls_per_snp )
+             , quantile( n_sls_per_snp, 0.75 )
+             , max( n_sls_per_snp )
+             , sum( n_sls_per_snp )
+             ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  data_color(
+    columns = c(everything(), -`min(n_sls_per_snp)`)
+    , rows = !(scheme == "Total") # ignore total row
+    # columns = c( `median(n_sls_per_snp)`, `max(n_sls_per_snp)` )
+    # , target_columns = c( scheme, `median(n_sls_per_snp)` )
+    , method = "numeric"
+    , palette = "GnBu"
+  ) %>% 
+    tab_header( title = md( 
+      paste0( "Number of pairings **per SNP in the different stratification "
+              , " schemes** on chromosome "
+                , params$chr_number )
+    ) )
+```
+
+
+# Data frame with all pairings that will be analysed in stage 07
+
+
+This "master data frame" will be exported. This file will be useful when creating tables and figures related to the final analyses.
+
+## Create data frame with all SNP x SL x EWAS PROBE x SCHEME combinations
+
+```{r}
+# 1) USE snp_sl AS BASIS
+# snp_sl contains 
+#     - snp
+#     - state_locus
+#     - scheme
+data.table::setDT( snp_sl ) # data.table for improved speed
+snp_sl
+  
+snp_sl %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(state_locus)
+             , n_distinct(scheme)
+             , n_distinct(snp, state_locus, scheme )
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_header( 
+    title = md( 
+      paste0( "General overview - `snp_sl` - Chromosome ", params$chr_number ) )
+  )
+nrows_before_join <- nrow(snp_sl)
+
+# 2) ADD SNP COORDINATES FROM NEWLY EXPORTED BIM FILE
+bim_0409 %>% 
+  summarise( n()
+             , n_distinct(snp)
+             , n_distinct(coord)
+             , n_distinct(snp, coord)
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_header( 
+    title = md( 
+      paste0( "General overview - `bim_0409` - Chromosome ", params$chr_number ) )
+  )
+
+snp_sl %<>%dplyr::left_join( 
+  .
+  , bim_0409 %>% select( snp, snp_chr = chr, snp_coord = coord ) %>% distinct()
+  , by = "snp"
+)
+snp_sl
+
+# Check that adding SNP coordinates did not result in more rows:
+stopifnot( nrow(snp_sl) == nrows_before_join )
+
+# Check all SNPs in snp_sl have coordinates:
+stopifnot( sum( is.na( snp_sl$snp_coord ) ) == 0 )
+
+# 3) ADD STATE LOCUS AND EWAS PROBE INFO FROM probe_list
+# probe_list contains 
+#     - scheme
+#     - probe_id
+#     - probe_chr
+#     - probe_coord
+#     - state_locus
+#     - state
+probe_list %>% head()
+
+probe_list %>% 
+  summarise( n()
+             , n_distinct(probe_id)
+             , n_distinct(probe_coord)
+             , n_distinct(probe_id, probe_coord)
+             , n_distinct(probe_id, probe_coord, scheme)
+             , n_distinct(probe_id, probe_coord, state)
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_header( title = md( paste0(
+    "General overview - `probe_list` - Chromosome ", params$chr_number
+  ) ) )
+
+
+snp_sl %<>%dplyr::left_join( 
+  .
+  , probe_list %>% distinct()
+  , by = c( "snp_chr" = "probe_chr"
+            , "state_locus"
+            , "scheme" )
+  , relationship = "many-to-many" # there are probably some SLs with > 1 probe
+)
+snp_sl
+
+# Rename snp_chr column to just "chr":
+snp_sl %<>% rename( chr = snp_chr )
+snp_sl
+
+# Check that each row is a unique combination of scheme, SNP, SL and EWAS probe:
+stopifnot( 
+  "Each row in the master data frame with all the SNP x SL x EWAS PROBE x SCHEME information, must be a unique combination of `snp`, `scheme`, `state_locus`, and `probe_id`." =
+    nrow( snp_sl ) == 
+    (snp_sl %>% distinct( snp, scheme, state_locus, probe_id ) %>% nrow())
+)  
+# Check that each row is a unique combination of scheme, SNP, SL and EWAS probe
+# + probe_coord and snp_coord:
+stopifnot( 
+  "Each row in the master data frame with all the SNP x SL x EWAS PROBE x SCHEME information, must be a unique combination of `snp`, `scheme`, `state_locus`, `probe_id`, `snp_coord` and `probe_coord`." =
+    nrow( snp_sl ) == 
+    (snp_sl %>% distinct( snp, scheme, state_locus, probe_id, snp_coord ) %>%
+       nrow())
+)  
+  
+# Reorder columns:
+snp_sl %<>% select( snp
+                   , snp_coord
+                   , probe_id
+                   , probe_coord
+                   , state_locus
+                   , state
+                   , scheme
+                   , chr )
+snp_sl
+```
+
+
+## Export "master file" with all SNP x SL x EWAS PROBE x SCHEME information
+
+```{r}
+snp_sl %>% 
+  summarise( n()
+             , n_distinct(snp, state_locus, probe_id, scheme, state  )
+             , n_distinct(snp)
+             , n_distinct(state_locus)
+             , n_distinct(probe_id)
+             , n_distinct(probe_id, state_locus)
+             , n_distinct(scheme)
+             , n_distinct(scheme, state)
+             , n_distinct(snp, state_locus, probe_id, state  )
+             , n_distinct(snp, state_locus)
+             , n_distinct(snp, probe_id)
+             ) %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_header( title = md( paste0(
+    "General overview - `snp_sl` - Chromosome ", params$chr_number
+  ) ) ) 
+
+
+# Export to feather file:
+snp_sl %>% 
+  feather::write_feather( . , path = all_snp_sl_probe_id_scheme_combos_path )
+```
+
+
+## Metadata 
+
+```{r}
+metadata <- file.info(
+  file.path( root_dir, all_snp_sl_probe_id_scheme_combos_path )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "PLINK files metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time - start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+

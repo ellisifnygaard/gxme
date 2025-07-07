@@ -1,0 +1,871 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 19
+  
+  # Root directory:
+  root_dir: ""
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  
+  # EWAS fileset:
+  # ewas_fileset_dir: "0409" # "hard-code" 0409 ewas fileset dir
+  # ewas_fileset_name: "0409_ewas" # "hard-code" 0409_ewas ewas fileset name
+  
+  # The most updated EWAS probe list with state loci:
+  # *This depends on the mQTL filtering procedure*
+  
+  
+  # SUMMARISING FUNCTION
+  # The function used to take an n x m matrix with EWAS probe data (n = # of 
+  # probes in SL, m = number of EWAS family members) to a 1 x m matrix with 
+  # summarised SL EWAS data
+  sl_summarising_function: "default"
+  # sl_summarising_function: "S:/Project/SAM/Julia/Ellisif/Paper 1/paper1/summarising_and_stratifying_functions/0501_summarising_function_max.R"
+  # sl_summarising_function: "S:/Project/SAM/Julia/Ellisif/Paper 1/paper1/summarising_and_stratifying_functions/0501_summarising_function_median.R"
+  
+  
+  # STRATIFYING FUNCTION
+  # The function used to take an 1 x m matrix with individual summarised EWAS 
+  # (m = number of EWAS family members) to a 1 x m matrix with integers 
+  # indicating the stratum that each family/individual has been allocated to 
+  # based on their summarised SL EWAS data.
+  sl_stratifying_function: "default"
+  # sl_stratifying_function: "S:/Project/SAM/Julia/Ellisif/Paper 1/paper1/summarising_and_stratifying_functions/0501_summarising_function_max.R"
+  # sl_stratifying_function: "S:/Project/SAM/Julia/Ellisif/Paper 1/paper1/summarising_and_stratifying_functions/0501_summarising_function_median.R"
+  
+  
+  # STAGE DIRECTORY
+  stage_dir: "0501"
+  
+title: "`r paste0(params$stage_dir, ' - Calculate the summary beta statistic and strata allocation number for all the EWAS family member at each state locus - Chromosome ', params$chr_number) `"
+---
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# STAGE DIRECTORY
+stage_dir <- params$stage_dir
+
+# EWAS FILESET
+ewas_fileset_dir <- "0409" # "hard-code" 0409 ewas fileset dir
+ewas_fileset_name <- "0409_ewas" # "hard-code" 0409_ewas ewas fileset name
+
+# THE MOST UPDATED EWAS PROBE LIST WITH STATE LOCI
+ewas_probes_path  <- file.path( "0407", "0407_scheme_probes.feather" )
+
+# THE MOST UPDATED LIST WITH SNP x SL PAIRINGS 
+snp_sl_pairings_previous_stage_path <-
+  file.path( "0407", "0407_snp_state_loci.feather" )
+
+
+# DETERMINE PIPELINE DIRECTORY
+# (The pipeline directory will be used to determine the correct path to
+# functions in the /R directory)
+
+# The pipeline directory is two levels up from the chromosome subdir being used
+# as the root directory by the Rmd script,
+# pipeline_dir/chromosomes/Chr01 -> up two levels -> pipeline_dir/
+pipeline_dir <- dirname( dirname( root_dir ) )
+
+
+
+# SL SUMMARISING FUNCTION
+sl_summarising_function <- params$sl_summarising_function
+
+# DETERMINE PATH TO SUMMARISING FUNCTION
+# If user specified sl_summarising_function = "default", then replace "default"
+# with the path to the default function:
+if( sl_summarising_function == "default" ){
+  sl_summarising_function <-
+    file.path( pipeline_dir , "R", "0501_summarising_function_default.R" )
+} else{
+  # If the function is user-provided, update sl_summarising_function to include
+  # full path instead of just file name:
+  sl_summarising_function <- 
+    file.path( root_dir , "functions", sl_summarising_function )
+}
+
+
+# SL STRATIFYING FUNCTION
+sl_stratifying_function <- params$sl_stratifying_function
+
+# DETERMINE PATH TO STRATIFYING FUNCTION
+# If user specified sl_stratifying_function = "default", then replace "default"
+# with the path to the default function:
+if( sl_stratifying_function == "default" ){
+  sl_stratifying_function <- 
+    file.path( pipeline_dir , "R", "0501_stratifying_function_default.R" )
+} else{
+  # If the function is user-provided, update sl_stratifying_function to include
+  # full path: instead of just file name
+  sl_stratifying_function <-
+    file.path( root_dir , "functions", sl_stratifying_function )
+}
+
+# SPECIFY PATH TO STATE LOCUS ID KEY:
+sl_id_key_path <- file.path( 
+  root_dir, stage_dir, paste0( stage_dir, "_sl_id_key.feather" )
+)
+
+# SPECIFY PATH TO UPDATED SNP x SL PAIRINGS:
+snp_sl_pairings_path <-
+  file.path( stage_dir, paste0( stage_dir, "_snp_state_loci.feather" ) )
+```
+
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  unlink( file.path( stage_dir, "*" ), recursive = TRUE, force = TRUE )
+}
+
+# Stop if there are still files left in stage_dir:
+if( length( list.files( stage_dir ) ) > 0 ){
+  stop(
+    "There are still files left in "
+    , file.path( root_dir, stage_dir)
+    , "!\nRemove them manually and try again."
+  )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+- `r  paste0( ewas_fileset_dir, "/", ewas_fileset_name, ".ffdata/RData" )`
+  
+- `r  ewas_probes_path`
+  
+  
+## Files produced by this script
+
+- `r  `   
+  
+  
+- `r `  
+
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  # , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+options(scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(feather)
+library(gt)
+library(HaplinMethyl)
+library(ff)
+```
+
+
+# Import Probe + State Loci Data
+
+```{r}
+probe_list <- feather::read_feather( ewas_probes_path )
+
+probe_list %>%
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+```
+
+
+# Assign a unique, short SL ID to each state locus
+
+The short SL IDs ("SL1", "SL2", "SL3", ... ) are more well suited for being used as row names in matrices. 
+This also makes the resulting files slightly smaller.
+
+```{r}
+# Create key df:
+sl_id_key <- probe_list %>% 
+  # Sort by coordinate:
+  arrange( probe_coord ) %>% 
+  # Select only distinct SLs:
+  distinct( state_locus ) %>% 
+  # Create column with new, simpler SL IDs:
+  mutate( sl_id = paste0( "SL", 1:n() ) )
+
+
+sl_id_key %>%
+  summarise( n()
+             , n_distinct(sl_id) 
+             , n_distinct(state_locus) 
+             , n_distinct(sl_id, state_locus) 
+  ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+sl_id_key %>%
+  head(8) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+# Export the SL ID key:
+sl_id_key %>% feather::write_feather( sl_id_key_path )
+
+
+# Add column containing new, simpler SL ID to probe list:
+probe_list %<>%
+  dplyr::left_join( ., sl_id_key, by = "state_locus") %>% 
+  # Sort by coordinate:
+  arrange(probe_coord)
+ 
+ 
+probe_list %>%
+  summarise( n()
+             , n_distinct(sl_id) 
+             , n_distinct(state_locus) 
+             , n_distinct(sl_id, probe_id) 
+  ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+
+probe_list %>%
+  head(8) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  fmt_integer()
+```
+
+
+# Update SNP x SL pairings with SL ID
+
+```{r}
+# Import the file with all the SNP x SL pairings:
+snp_sl <- feather::read_feather( snp_sl_pairings_previous_stage_path )
+
+# Glance at data in file:
+snp_sl %>%
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+
+snp_sl %>%
+  summarise( n()
+             , n_distinct(snp, state_locus, scheme )
+             , n_distinct(snp, state_locus)
+             , n_distinct(snp), n_distinct(state_locus)
+             ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+
+
+
+# Add the newly created SL IDs to the SNP x SL pairings for use at later stages:
+
+snp_sl %<>% 
+  # Full join because it should render the same result as left join:
+  dplyr::full_join( . , sl_id_key, by = "state_locus" )
+
+# Check that neither the snp nor the sl_id contain NA (i.e. that snp_sl and
+# sl_id_key contain the exact same state locus identifiers):
+if( any( is.na( snp_sl$snp ) ) == TRUE & any( is.na( snp_sl$sl_id ) ) == TRUE ){
+  stop(
+    "`state_locus` in "
+    , gsub( root_dir, "", snp_sl_pairings_previous_stage_path )
+    , " must contain the exact same state loci as `state_locus` in "
+    , gsub( root_dir, "", sl_id_key_path )
+  )
+}
+
+
+snp_sl %>%
+  head() %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+
+snp_sl %>%
+  summarise( n()
+             , n_distinct(snp, state_locus, scheme, sl_id )
+             , n_distinct(snp, state_locus, scheme )
+             , n_distinct(snp, state_locus)
+             , n_distinct(snp)
+             , n_distinct(state_locus)
+             , n_distinct(sl_id)
+             ) %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer()
+
+
+# Export the updated SNP x SL pairings:
+feather::write_feather( snp_sl, snp_sl_pairings_path )
+
+
+# Metadata
+
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = basename(snp_sl_pairings_path)
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "SNP x state locus pairings metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+
+# Import EWAS data
+
+```{r}
+ewas <- HaplinMethyl::envDataLoad( 
+  filename =  ewas_fileset_name
+  , dir.in = ewas_fileset_dir
+)
+invisible( gc() ) # garbage collection
+length( ewas ) # no. of chunks in ewas data
+dim( ewas[[1]] )
+
+# Row names = CpG IDs
+rownames(ewas[[1]]) %>% head()
+```
+
+
+
+# Summarising and Stratification
+
+## Source Functions
+
+```{r}
+# Function for sourcing file (found on Stack Overflow; posted by user "MrFlick")
+source_local_function <- function( ..., local = NULL){
+  tmp <- new.env( parent = parent.frame() )
+  source( ..., local = tmp )
+  funs <- names(tmp)[ unlist(eapply( tmp, is.function ))]
+  for( x in names(tmp) ){
+    assign( x, tmp[[x]], envir = parent.frame() )
+  }
+  list( sourced_functions = funs )
+}
+# (Sources file into temp environment, copies them to the main/parent
+# environment and them prints a list of the functions that were sourced from the
+# file. )
+
+# SUMMARISING FUNCTION
+source_local_function( sl_summarising_function )
+
+# STRATIFYING FUNCTION
+source_local_function( sl_stratifying_function )
+
+```
+
+
+## Apply summarising and stratification functions to each state locus
+
+```{r }
+# For a particular SL, 
+
+#     1) extract the EWAS data belonging to the probes in that SL,
+
+#     2) apply the specified summarising function to the extracted data,
+#       resulting in a 1 x m matrix, where the row name = the SL ID, the column
+#       names = the EWAS family member IDs, and the cells consist of the
+#       individual summarised EWAS measurements for this particular SL.
+
+
+# Function to be used in lapply:
+
+slwise_strata_computation1 <- function( sl, probe_list, ewas ){
+  # # test params:
+  # sl <- sl_id_key$sl_id[2]
+  
+  # Get the IDs of the probes belonging to the SL:
+  probe_ids <- probe_list %>% filter( sl_id == sl ) %>% pull( probe_id )
+  
+  # NB!!! This following method of subsetting the EWAS data works only if the
+  # env.data object containing the EWAS data only has 1 chunk! HaplinMethyl
+  # currently divides the data into chunks if there are more than 10,000 columns
+  # in the data.
+  # Double check that ewas only has one chunk:
+  stopifnot( "The EWAS data has more than one chunk!" = length(ewas) == 1 )
+  
+  # Get the observed measurements of the SLs probes from EWAS data:
+  sl_probe_matrix <- ewas[[1]][which( rownames(ewas[[1]]) %in% probe_ids), 
+                               , drop = FALSE]
+
+  # Stop if the returned matrix does not have one row per probe id:
+  stopifnot( nrow(sl_probe_matrix) == length( probe_ids ) )
+  
+  # Apply the matrix level summarising function
+  sl_summarised_matrix <- summarising_function( mat = sl_probe_matrix
+                                                , sl_id = sl )
+  
+  # Stop unless summarised matrix has dimensions 1 x n:
+  stopifnot( dim(sl_summarised_matrix)[1] == 1 &
+               dim(sl_summarised_matrix)[2] == ncolumns(ewas)
+  )
+  
+  # Apply the stratifying function to the 1 x n matrix with summarised values:
+  sl_stratified_matrix <- stratifying_function( mat = sl_summarised_matrix )
+  
+  return( sl_stratified_matrix )
+}
+
+
+# Create list with one 1 x n matrix with strata allocations per state locus
+# using lapply:
+
+system.time({
+  # all_sl_strata <- lapply( unique(probe_list$sl_id)[1:100], function(i){
+  all_sl_strata <- lapply( unique(probe_list$sl_id), function(i){
+    slwise_strata_computation1( sl = i
+                               , probe_list = probe_list
+                               , ewas = ewas )
+  } )
+  
+  # Combine all the 1 x n matrices into one large m x n matrix:
+  all_sl_strata <- do.call( rbind, all_sl_strata )
+})
+
+# Look at the resulting matrix with all the individual strata allocations for
+# all state loci:
+class( all_sl_strata )
+dim( all_sl_strata )
+# Size of resulting matrix:
+format( object.size(all_sl_strata), "Mb") # chr19: 3.4 Mb 
+# Glance at resulting matrix (one column per individual):
+write.table( all_sl_strata[ 1:min( nrow(all_sl_strata), 5)
+                            , 1:min( ncol(all_sl_strata), 10 )
+                            , drop = FALSE]
+             , row.names = TRUE
+             , col.names = FALSE # don't display individuals' IDs
+             , quote = FALSE )
+
+
+# Test that all_sl_strata contains all the state loci from the probe list:
+stopifnot( all( unique( probe_list$sl_id ) %in% rownames( all_sl_strata ) ) )
+
+
+# Convert all_sl_strata to ff format:
+all_sl_strata_ff <- ff( all_sl_strata
+                       , update = TRUE
+                       , dim = dim( all_sl_strata )
+                       , dimnames = list(
+                         rownames(all_sl_strata)
+                         , colnames(all_sl_strata)
+                       )
+                       , filename = file.path(
+                         root_dir
+                         , stage_dir
+                         , paste0( stage_dir, "_all_sl_strata.ff" )
+                       )
+                       , overwrite = TRUE
+                       , finalizer = "close" 
+                       # (If the ff object is removed, it gets closed)
+)
+
+class( all_sl_strata_ff )
+dim( all_sl_strata_ff )
+# Size of resulting ff matrix:
+format( object.size(all_sl_strata_ff), "Mb") # chr19: 0.1 Mb
+# Glance at resulting matrix (one column per individual):
+write.table( all_sl_strata_ff[ 1:min( nrow(all_sl_strata_ff), 5)
+                            , 1:min( ncol(all_sl_strata_ff), 10 )
+                            , drop = FALSE]
+             , row.names = TRUE
+             , col.names = FALSE # don't display individuals' IDs
+             , quote = FALSE )
+
+# Test that matrix and ff_matrix have the exact same contents:
+stopifnot( 
+  "Converting all_sl_strata matrix to ff_matrix failed (cells)." =
+    all( all_sl_strata[1:nrow(all_sl_strata),] %in% 
+           all_sl_strata_ff[1:nrow(all_sl_strata),] )
+)
+# Test that matrix and ff_matrix have the exact same rownames:
+stopifnot( 
+  "Converting all_sl_strata matrix to ff_matrix failed (row names)." =
+    all( rownames(all_sl_strata) %in% rownames( all_sl_strata_ff ) )
+)
+# Test that matrix and ff_matrix have the exact same column names:
+stopifnot( 
+  "Converting all_sl_strata matrix to ff_matrix failed (column names)." =
+    all( colnames(all_sl_strata) %in% colnames( all_sl_strata_ff ) )
+)
+
+# Stop if the .ff file with the strata was not successfully exported to the
+# correct path:
+stopifnot( file.exists( 
+  file.path( root_dir, stage_dir, paste0( stage_dir, "_all_sl_strata.ff") )
+  ) )
+
+```
+
+
+## Check that the individuals have been allocated to at least 2 different strata
+
+If all the individuals have been given the stratum number, then either something has gone very wrong or it is pointless to use pipeline in the first place.
+
+
+```{r}
+# Every single row of the matrix resulting from the lapply loop must contain at
+# least 2 unique integers and the number of unique integers must be the same in
+# every row
+# (I.e. you can't have 2 strata for some state loci and then have 3 strata for
+# other state loci)
+
+# Create list where element i contains the unique values in row i (SL ID no. i)
+all_sl_strata_unique_values <- apply( all_sl_strata
+                                      , 1
+                                      , function(x) sort( unique(x) )
+                                      , simplify = FALSE )
+
+# Check whether all the items in this list are the same
+stopifnot(
+  "All the rows (i.e. state loci) in 'all_sl_strata' must contain the same unique values!" =
+    length(unique(all_sl_strata_unique_values)) == 1
+)
+
+# Check whether all the items in this list contain at least 2 unique values
+# (I.e. whether the individuals get divided into at least 2 strata for every
+# state loci)
+stopifnot(
+  "All the rows (i.e. state loci) in 'all_sl_strata' must contain at least 2 unique values!" =
+    all( sapply(all_sl_strata_unique_values, function(x) length(x) > 1 ) )
+)
+
+# Check whether all the items in this list consist exclusively of integers
+# (The strata must be represented by integers.)
+stopifnot(
+  "All the rows (i.e. state loci) in 'all_sl_strata' can only contain integers!" =
+    all( sapply(all_sl_strata_unique_values, function(x) all(x %% 1 == 0) ) )
+)
+```
+
+
+
+## Save the ff_matrix with all the strata data
+
+```{r}
+# Use ffsave to create an ffarchive where the ff object all_sl_strata_ff is
+# stored:
+# (An ffarchive consists of two files: one RData file and one ffData file)
+ff::ffsave( 
+  all_sl_strata_ff
+  # Name for the ffarchive
+  , file = 
+    file.path( root_dir, stage_dir, paste0( stage_dir, "_all_sl_strata") )
+  # Whether the ff files should be moved instead of copied into the .ffData:
+  , move = TRUE 
+  # Speficy 'rootpath' so that ffload() doesn't create an empty directory in
+  # root_dir:
+  , rootpath = file.path( root_dir, stage_dir )
+  # I don't fully understand the documentation of the 'rootpath' argument.
+  # However, my experiments show that if 'rootpath' is set to the stage
+  # directory, then calling ffload in the next chunk does not result in an
+  # annoying empty folder named "S" in root_dir where  = a weird dot symbol. 
+  # (The "S" comes from the very start of my particular root_dir on the server I
+  # am using: "S:\Project\...").
+  # When I do not use the rootpath argument, ffload creates the annoying folder.
+  # This appears to happen when a line from the function containing
+  # "get(".ff.rootpath", envir = envir)" is evaluated, and ".ff.rootpath" comes
+  # from the ffarchive created using ffsave.
+)
+
+# Close the ff file if it is open (otherwise it will be tricky to delete the
+# file if needed)
+if( is.open(all_sl_strata_ff) ) close(all_sl_strata_ff)
+
+# Remove the ff_matrix:
+rm(all_sl_strata_ff)
+```
+
+
+## Check that the `ffarchive` contains all state loci from the probe list as well as all individuals from the EWAS data
+
+
+```{r}
+unzipped_ff_file <- ff::ffload(
+  file = file.path( root_dir, stage_dir, paste0( stage_dir, "_all_sl_strata") )
+  , overwrite = TRUE
+)
+#qqq When finished with the ff data, should the script delete "0501_all_sl_strata.ff" (the file that results from loading the ffarchive using ffload) from the stage directory? In case using ffload could possible fail at later stages in the pipeline, even when using overwrite = TRUE?
+
+# If loading the saved matrix with the strata was successful, 'unzipped_ff_file'
+# should be a string containing the path to the ff file that was unzipped from
+# the ffarchive.
+# If 'unzipped_ff_file' is a character vector, that means that more than one ff
+# file  was unzipped => something went wrong. Also, if 'unzipped_ff_file' does
+# not contain the string "all_sl_strata", then something has gone wrong.
+stopifnot( "There is more than one ff file in the ffarchive" =
+             length(unzipped_ff_file) == 1 )
+stopifnot( "ffarchive does not contain 0501_all_sl_strata.ff" =
+             grepl( paste0( stage_dir, "_all_sl_strata")
+                    , unzipped_ff_file ) )
+
+# Check that the ff file from the ffarchive is an ff_matrix:
+stopifnot( "ff_matrix" %in% class(all_sl_strata_ff) )
+
+# Check that the ff file from the ffarchive has the correct dimensions:
+stopifnot(
+  "The exported ff file has the wrong number of rows" =
+    nrow( all_sl_strata_ff ) == length( unique( probe_list$state_locus ) )
+)
+stopifnot(
+  "The exported ff file has the wrong number of columns" =
+    ncol( all_sl_strata_ff ) == HaplinMethyl::ncolumns(ewas)
+)
+
+# Check that the ff file from the ffarchive has the correct row/column names:
+stopifnot(
+  "The exported ff file has the wrong row names" =
+    all( sort( rownames( all_sl_strata_ff ) ) == 
+           sort( unique( probe_list$sl_id ) ) )
+)
+stopifnot(
+  "The exported ff file has the wrong column names" =
+    all( colnames( all_sl_strata_ff ) == 
+           summary( ewas, short = FALSE)$colnames )
+)
+
+# Test that ff_matrix in the ff file and the all_sl_strata matrix have the exact
+# same contents:
+stopifnot( 
+  "The exported ff file is an ff_matrix whose cells are not identical to the 'all_sl_strata' matrix." =
+    all( all_sl_strata[1:nrow(all_sl_strata),] %in% 
+           all_sl_strata_ff[1:nrow(all_sl_strata),] )
+)
+```
+
+
+## Metadata for the `ff_matrix` with all the state locus-specific strata allocations
+
+```{r}
+tibble(
+  "N rows" = nrow( all_sl_strata_ff )
+  , "N unique row names" = length( unique( rownames(all_sl_strata_ff) ) )
+  , "N columns" = ncol( all_sl_strata_ff )
+  , "N unique column names" = length( unique( colnames(all_sl_strata_ff) ) )
+  , "Unique cell values" = paste( sort(
+    unique(as.vector(as.matrix( all_sl_strata[1:nrow(all_sl_strata),] )))
+    ), collapse = ", " )
+) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , use_seps = TRUE) %>%
+  # fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "`ff_matrix` in `ffarchive` metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+
+## Metadata `ffarchive` with all the state locus-specific strata allocations
+
+```{r}
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = paste0( stage_dir, "_all_sl_strata") 
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( 
+    title = md(paste0( "`ffarchive` metadata - Chromosome ", params$chr_number))
+  )
+```
+
+
+# Close the `ff_matrix`
+
+```{r}
+close(all_sl_strata_ff)
+```
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

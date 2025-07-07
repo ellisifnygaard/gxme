@@ -1,0 +1,530 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 19
+  
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  
+  # Annotated EWAS probe list:
+  # ewas_probe_annot_path: "0401/0401_ewas_probe_annotations.feather" # "hard-code"
+  
+  # Stratification scheme definitions:
+  scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "99_TSS2", "Z_znf1" = "84_znf1", "Z_znf2" = "85_znf2" )
+  
+  # Directory to export resulting files to:
+  stage_dir: "0404"
+title: "`r paste0('0404 Assign EWAS probes to stratification schemes - One state per scheme - Chromosome ', params$chr_number) `"
+---
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+**HERE WE USE A VERY SIMPLE STRATIFICATION SCHEME DEFINITION:**  
+  
+1) A SCHEME CAN ONLY CONTAIN EWAS PROBES ANNOTATED WITH ONE SPECIFIC FULL-STACK STATE (EACH SEPARATE FULL-STACK STATE = A SEPARATE SCHEME)  
+  
+2) ALL PROBES ANNOTATED WITH A SCHEME-SPECIFIC STATE ARE ASSIGNED TO THE SCHEME. (DETERMINING THE FINAL SNP-PROBE PAIRINGS HAPPENS LATER)
+
+Take the EWAS probe annotations from 0401 and assign probes annotated with state "98_TSS1" to stratification scheme "A1_TSS1", the probes annotated with state "99_TSS2" to stratification scheme "A2_TSS2", etc.\
+Export a data frame containing the scheme-specific probes - one data frame per scheme.  
+  
+**Note:**  
+If we at a later stage want to be able to tweak the schemes so that all schemes do not follow the same recipe, this script would need significant changes. Perhaps adding the "tweaks" as a parameter, e.g. a names vector specifying "profiles" for each of the schemes in `params$scheme_states`?  
+Or we would need to go back to having one script per scheme, but that does not seem very efficient.
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# "hard-code":
+ewas_probe_annot_path <- file.path( "0401"
+                                    , "0401_ewas_probe_annotations.feather" )
+
+scheme_states <- params$scheme_states
+
+stage_dir <- params$stage_dir
+
+# Specify path(s) of produced file(s) with scheme-assigned ewas probes:
+scheme_info_df <- data.frame(
+  scheme = names(scheme_states)
+  , state = scheme_states
+  , path = file.path( stage_dir
+                      , paste0( stage_dir 
+                                , "_"
+                                , names(scheme_states)
+                                , "_all_scheme_probes.feather" )
+  )
+)
+
+# Specify path of date frame with probes not allocated to a scheme:
+probes_without_scheme_path <- file.path( 
+  stage_dir, paste0( stage_dir, "_ewas_probes_without_scheme.tsv" )
+)
+```
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+
+-   `r ewas_probe_annot_path` - The annotated probe list from 0401 with full-stack chromatin states from Vu
+    & Ernst (2022).
+
+
+## Files produced by this script
+
+-   `r file.path(  root_dir, stage_dir, paste0(stage_dir, "_*SCHEME_NAME*_all_scheme_probes.feather" ) )` -
+    Scheme-specific data frames containing only the probes assigned to the scheme.
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+
+options( scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(feather)
+library(gt)
+library(magrittr)
+library(readr)
+```
+
+# Import data
+
+## Annotated probes from 0401
+
+### File metadata
+
+```{r}
+metadata <- file.info( ewas_probe_annot_path
+  , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode, -atime )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small")
+```
+
+### Import annotated probes from 0401
+
+```{r}
+probes <- feather::read_feather( ewas_probe_annot_path )
+dim(probes)
+probes %>% head() %>% gt::gt() %>% tab_options( table.font.size = "small")
+
+probes %>% 
+  summarise( 
+    "Number of rows" = n()
+    , "Number of unique EWAS probes" = n_distinct( probe_id )
+    , "Number of unique combinations of probe ID and full-stack state" = 
+      n_distinct( state, probe_id )
+    , "Number of unique full-stack states" = n_distinct( state )
+    , "Chromosome" = unique( probe_chr )
+  ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "small") %>% 
+  fmt_integer( . , columns = everything(), use_seps = TRUE) %>% 
+  gt::tab_header( 
+    title =  paste0(  "Summary of 0401_chr", ewas_probe_annot_path)
+  )
+```
+
+
+
+# Stratification Schemes Definitions
+
+Scheme names and their respective full-stack state, as specified by the user in the argument `scheme_states`.
+
+```{r}
+scheme_info_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "small") %>% 
+  opt_row_striping() %>% 
+  gt::tab_header( title = "Stratification Scheme Definitions")
+```
+
+
+# Extract all probes annotated with a full-stack state belonging to stratification scheme
+
+Extract the probes annotated with scheme-specific full-stack state in 0401.
+
+
+```{r}
+# Extract the probes that are annotated with a full-stack state belonging to
+# this scheme:
+probes_scheme <- probes %>% 
+  filter( state %in% scheme_info_df$state )
+dim( probes_scheme )
+
+head( probes_scheme ) %>% gt::gt() %>% tab_options( table.font.size = "small")
+probes_scheme %>%
+  sample_n( size = ifelse( nrow(probes_scheme) >= 6
+                           , yes = 6, no = nrow(probes_scheme)
+  ) ) %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small")
+
+# Add column with scheme name:
+probes_scheme %<>% 
+  dplyr::left_join( . , scheme_info_df %>% select(-path), by = "state" )
+head( probes_scheme ) %>% gt::gt() %>% tab_options( table.font.size = "small")
+```
+
+
+# Summary of the scheme-assigned probe data 
+
+```{r}
+# Add column with number of probes per state loci:
+probes_scheme %<>% 
+  group_by( state_locus ) %>% 
+  mutate( n_probes_per_state_locus = n_distinct(probe_id)) %>% 
+  ungroup()
+
+probes_scheme %>% 
+  select( state_locus, n_probes_per_state_locus ) %>% 
+  distinct() %>% 
+  count( n_probes_per_state_locus ) %>% 
+  janitor::adorn_totals( "row" ) %>%
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "small") %>% 
+  gt::tab_header( 
+    title = md("Number of probe IDs per state loci in `probes_scheme`")
+  )
+
+probes_scheme %>%
+  group_by( scheme ) %>% 
+  summarise( "N rows" = n()
+             , "N unique probe IDs" = n_distinct( probe_id )
+             , "N unique combinations of scheme name and probe IDs" = 
+               n_distinct( probe_id, scheme )
+             , "N unique state loci" = n_distinct( state_locus )
+             , "Chromosome" = unique( probe_chr )
+             ) %>% 
+  janitor::adorn_totals( "row" ) %>%
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "small") %>% 
+  gt::tab_header( 
+    title = "Probes assigned to a stratification scheme"
+  )
+```
+
+
+# Annotated probes that were not assigned to a scheme
+
+```{r}
+# Get the probes from the annotated probe list from 0401 that were not allocated
+# to a scheme:
+# (I.e. rows in probes with probe_id that do not have a match in probes_scheme)
+probes_without_scheme <- probes %>%
+  filter( !( probe_id %in% probes_scheme$probe_id ) )
+
+# Check that none of the probes have state specified in scheme df:
+stopifnot(
+  all( !( unique( probes_without_scheme$state ) %in% scheme_info_df$state ) )
+)
+
+# Make df ready for export:
+probes_without_scheme %<>%
+  select( probe_id ) %>%
+  mutate( exclusion_reason = "not annotated with a scheme-specific state")
+
+# Summary:
+probes_without_scheme %>% 
+  head() %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small")
+
+probes_without_scheme %>% 
+  summarise( n(), n_distinct(probe_id) ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small")
+
+# Export the df for later reference:
+probes_without_scheme %>% 
+   readr::write_tsv( .
+                    , file = probes_without_scheme_path
+                    , col_names = TRUE
+  )
+rm(probes, probes_without_scheme);invisible( gc() )
+```
+
+
+
+# Checks
+
+## Are there schemes without any probes on this particular chromosome?
+
+```{r results='asis'}
+nrows_per_scheme <- sapply( scheme_info_df$scheme, function(s){
+  return( probes_scheme %>%
+    filter( scheme == s ) %>%
+    nrow() )
+} )
+
+schemes_without_probes <- names( nrows_per_scheme[ nrows_per_scheme == 0] )
+
+if( length(schemes_without_probes) == 0 ){ 
+  message("All the schemes have been assigned at least one probe.")
+  } else{
+  warning( "### There are schemes that were not assigned any probes due to " 
+           , "there being zero EWAS probes mapped to chromosome "
+          , chr_number
+          ," that were annotated with the appropriate full-stack state.\n"
+          , "The following schemes will therefore not be analysed:\n"
+       , paste0( schemes_without_probes, collapse = ", "))
+}
+```
+
+## Is each row a unique combination of probe ID and scheme name?
+
+```{r}
+stopifnot(
+  "In 'probes_scheme', each row must be a unique combination of 'probe_id' and 'scheme'." =
+    nrow( probes_scheme) == 
+    ( probes_scheme %>% distinct( probe_id, scheme ) %>% nrow() )
+)
+
+```
+
+
+# Split the scheme-assigned probes into one data frame per scheme
+
+We are currently splitting the probes by scheme and then combining them into one data frame again in the next script. This may seem redundant, but the reason for doing this is to have a infrastructure in place that would allow implementing "recipes" for each scheme that are significantly different from each other.  
+  
+
+```{r}
+# Remove unnecessary columns:
+probes_scheme %<>% 
+  select( scheme
+          , probe_id
+          , probe_chr
+          , probe_coord
+          , state_locus
+          , state
+  ) %>% 
+  # Order rows by scheme name and probe coordinate: 
+  arrange( scheme, probe_coord )
+dim(probes_scheme)
+
+
+# Split into list with one data frame per scheme
+scheme_dfs <- split( probes_scheme, f = probes_scheme$scheme )
+# length( scheme_dfs )
+# sapply( scheme_dfs, dim )
+# sapply( scheme_dfs, dim ) %>% rowSums()
+lapply( scheme_dfs, head )
+```
+
+
+# Export one data frame per scheme
+
+For each scheme, export the data frame and get the resulting file's metadata
+
+```{r}
+exported_files_metadata <- lapply( 1:length(scheme_dfs), function(scheme){
+  # Get scheme df:
+  df <- scheme_dfs[[scheme]]
+  
+  # Make file path/name:
+  file_path <- scheme_info_df$path[scheme]
+
+  # Export df:
+  df %>% feather::write_feather( . , file_path )
+  
+  # Get metadata of exported file:
+  metadata <- file.info( file_path, extra_cols = FALSE)
+  metadata <- cbind( data.frame( "file" = rownames(metadata))
+                     , data.frame( metadata, row.names = NULL) ) %>% 
+    select( -isdir, -mode, -atime ) %>% 
+    filter( grepl( "scheme_probes", file) )
+  metadata$n_rows <- nrow(df)
+  metadata$n_cols <- ncol(df)
+  metadata$n_distinct_probes <- n_distinct(df$probe_id)
+  metadata$n_distinct_state_locus <- n_distinct(df$state_locus)
+  metadata$full_stack_state <- unique(df$state)
+  
+  # Return metadata:
+  return( metadata )
+} )
+
+dplyr::bind_rows( exported_files_metadata ) %>% 
+  gt::gt() %>%
+  tab_options( table.font.size = "x-small") %>% 
+  gt::tab_header( title = "Exported files containing scheme-assigned probes - 
+                  One file per stratification scheme")
+
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

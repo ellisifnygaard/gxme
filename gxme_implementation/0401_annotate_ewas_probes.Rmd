@@ -1,0 +1,639 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 19
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  root_dir: "C:/Temp/edj079/2024-05-14_pipeline_dir/chromosomes/Chr19"
+  
+  # EWAS probe list:
+  # ewas_probe_list_path: "0301/0301_probe_list.feather" # "hard-code" probe list
+  
+  # EWAS annotation file:
+  ewas_annotation_file: "hg19_genome_100_segments.bed.gz"
+
+  # Directory to export resulting files to:
+  stage_dir: "0401"
+title: "`r paste0('0401 Annotate EWAS probes with chromatin state - Chromosome ', params$chr_number) `"
+---
+
+Annotate EWAS probes with chromatin state using the universal full-stack annotation file made available in Vu & Ernst (2022).  
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+# "hard-code" probe list:
+ewas_probe_list_path <-  file.path("0301", "0301_probe_list.feather") 
+
+stage_dir <- params$stage_dir
+
+# ANNOTATION FILE
+ewas_annotation_file <- file.path( root_dir, params$ewas_annotation_file )
+
+# Specify path of produced file with non-annotated ewas probes:
+not_annotated_probe_path <- file.path(
+  stage_dir, paste0( stage_dir, "_ewas_probes_without_annotations.tsv" )
+)
+
+# Specify path of produced file with annotated ewas probes:
+ewas_probe_annot_path <- file.path(
+  stage_dir, paste0( stage_dir, "_ewas_probe_annotations.feather" )
+)
+```
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+  
+  
+-   `r ewas_annotation_file`  - The annotation file for hg19 from Vu & Ernst (2022) .
+  
+-   `r ewas_probe_list_path`  - The probe list from 0301 containing the EWAS probes that survived the QC in 0301 and the probes' genomic coordinates.
+   
+
+## Files produced by this script
+
+- `r ewas_probe_annot_path` - The probe list from 0401, but annotated with full-stack chromatin states from Vu & Ernst (2022). 
+ 
+ 
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+
+options( scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(dplyr)
+library(gt)
+library(magrittr)
+library(feather)
+library(readr)
+```
+
+
+# Import data
+
+## Annotation file for hg19 from Vu & Ernst (2022)
+
+### File metadata
+
+```{r}
+metadata <- file.info( ewas_annotation_file
+                       , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+rm(metadata)
+```
+
+### Import annotation data and filter according to chromosome
+
+```{r}
+#xxx Split hg19_genome_100_segments.bed.gz into one file per chromosome prior to running pipeline. ->>> 0401i ? 
+annot <- data.table::fread( ewas_annotation_file
+                            , col.names = 
+                              c( "chrom", "chromStart", "chromEnd", "state")
+)
+invisible( gc() ) # garbage collection
+
+dim(annot)
+
+head(annot) %>% 
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+annot %>% 
+  sample_n( size = ifelse( nrow(annot) >= 5, yes = 5, no = nrow(annot) )) %>% 
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+annot %>%
+  count( chrom ) %>% 
+  janitor::adorn_totals() %>% 
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+# Use only data from the current chromosome
+annot %<>% 
+  filter( chrom %in% paste0("chr", chr_number) )
+dim(annot)
+annot %>% count( chrom )
+
+# Stop if there are no rows left in annot after filtering by chromosome:
+stopifnot( nrow(annot) > 0 )
+
+# Change chromStart from 0-based to 1-based:
+annot %<>% mutate( chromStart = chromStart + 1 )
+head(annot) %>% 
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+```
+
+
+## EWAS probe list with coordinates
+
+### File metadata
+
+```{r}
+# Probe list from 0401:
+metadata <- file.info( 
+ file.path( root_dir, ewas_probe_list_path )
+  , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) 
+) %>% select( -isdir, -mode )
+metadata %>%
+  gt::gt() %>% 
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+rm(metadata)
+```
+
+### Import probe list
+
+```{r}
+probe_list <- feather::read_feather( 
+  file.path(root_dir, ewas_probe_list_path ) 
+)
+invisible( gc() ) # garbage collection
+dim(probe_list)
+head(probe_list)
+probe_list %>%
+  sample_n( size =
+              ifelse( nrow(probe_list) >= 5, yes = 5, no = nrow(probe_list) ))
+
+# Convert probe_list to data.table
+data.table::setDT(probe_list)
+probe_list
+```
+
+# Checks
+
+```{r}
+# Stop if the chromosome in the annotation df is not equal to the chromosome in
+# the probe list:
+stopifnot( 
+  "probe_list$probe_chr is different from number in annot$chrom! 
+  (This should not happen.)" =
+    ( unique( probe_list$probe_chr) ) == 
+    as.integer( ( gsub("\\D", "", unique( annot$chrom) ) ) )
+)
+
+# annot$chrom %>% unique()
+# probe_list$probe_chr %>% unique()
+```
+
+
+# Pair up EWAS probes and annotation segments
+
+```{r}
+# PAIR PROBES WITH STATE LOCI 
+message( "Pairing EWAS probes with state loci/chromatin states...\n")
+
+# We will be using a for-loop iterating over probes that are sorted by
+# coordinate in *ascending order*. I.e. as i increases, we move further and
+# further away from coordinate 1/the start of the chromosome.
+
+# It is therefore crucial that the probe list and the annotation file are both
+# sorted by position on the chromosome in ascending order.
+
+system.time({
+
+# Prep annot
+# Ensure that annot is sorted by chromStart in ascending order:
+annot %<>% arrange( chromStart )
+
+# Create index column: 
+annot %<>% mutate( ind = 1:n() ) 
+# Create copy of annot, but with only necessary columns:
+annot_for <- annot %>% select(-chrom,-state)
+
+# annot_for will be used in the for-loop. When executing the loop, we will
+# remove rows that are no longer needed as the iterations progress. This results
+# in annot_for becoming increasingly smaller and saves us time and memory.
+
+# The use of an index column also saves time/memory as it is faster to add one
+# integer to a row in probe_list_annotated, than adding multiple elements.
+# Adding data from annot later using a left join with the index as a key is not
+# time-consuming.
+
+
+# Prep probe_list 
+# Ensure that probes are sorted by coord in ascending order
+probe_list <- probe_list %>% arrange(probe_coord) # something probably happened when removing 0302 and moving the probe list creation to 0301 that made the probe list no longer be ordered by probe coordinate in ascending order. It's good that this happened because there should have been a "safety valve" here from the start ensuring the rows are ordered correctly.
+probe_list_annotated <- probe_list %>% arrange(probe_coord)
+# Initiate empty index column:
+probe_list_annotated$ind <- NA
+
+for( i in 1:nrow(probe_list)){
+  if( i %% 1000 == 0){
+    cat( i, "probes down,", nrow(probe_list) - i, "probes to go ...\n")
+  } 
+  
+  # Data frame with just probe i:
+  probe_i_coord <- probe_list$probe_coord[i]
+  
+ # Identify rows in annot_for with segments that contain probe_coord 
+  # (probe_coord = cytosine base according to Illumina documentation)
+  for( j in 1:nrow(annot_for) ){
+    if(  annot_for$chromStart[j] <= probe_i_coord &
+         annot_for$chromEnd[j] >= probe_i_coord ){
+      overlapping_segment_row <- j
+      # No need to check the rest of annot once overlapping segment is found:
+      break 
+    }
+  }
+  # If none of the rows in annot contain an interval [chromStart, chromEnd] that
+  # contains probe_i_coord, then set overlapping_segment_row to zero
+  if( exists("overlapping_segment_row") == FALSE ){
+    overlapping_segment_row <- 0
+  }
+    
+  # If overlapping_segment_row = 0, then annot does not contain an annotation
+  # of probe i, and the i'th row in probe_list_annotated$ind, which belongs to
+  # probe i, is set to NA
+  if( overlapping_segment_row == 0 ){
+      probe_list_annotated$ind[i] <- NA
+      # If there is one row in annot_for where [chromStart, chromEnd] contains
+      # probe_i_coord:
+  }else if( length(overlapping_segment_row) == 1 &
+            overlapping_segment_row >= 1 ){
+    # We now have one single row number in annot_for that corresponds to the segment
+    # that probe i is located in. Add information from this row to probe list:
+    probe_list_annotated$ind[i] <- 
+      annot_for$ind[overlapping_segment_row]
+
+    # Remove any rows preceding overlapping_segment_row:
+    # (Since probe_list is sorted by probe_coord in ascending order, none of the
+    # subsequent probes will overlap with the rows in annot that precede
+    # overlapping_segment_row)
+    if( overlapping_segment_row > 1 ){ 
+      # Keep only the rows from row overlapping_segment_row and up:
+      annot_for <- annot_for[ overlapping_segment_row:nrow(annot_for), ]
+      # This will reduce the number of rows to search through throughout the
+      # iterations.
+    } 
+  } else{
+    # If there are zero rows or more than one row in overlapping_segment_row
+    # something has gone very wrong
+    stop( paste0( "There are ", length(overlapping_segment_row), " rows in the "
+                  , "annotation file containing the coordinate of "
+                  , probe_list_annotated$probe_id[i], ".\n"
+                  , "The full-stack state annotations are mutually exclusive, "
+                  , "(i.e. they don't overlap), so there should only be one" 
+                  ," unique state locus containing the probe.\n"
+    )) }
+  # Remove overlapping_segment_row so that it does not exist in iteration i+1
+  # unless probe i+1 has a coordinate that is contained in the interval of a
+  # particular row in annot_for
+  rm(overlapping_segment_row)
+}
+invisible( gc() ) # garbage collection
+
+# Stop if any of the probes were not paired up with a chromatin state:
+message( "There are "
+        , sum( is.na( probe_list_annotated$ind ))
+        , " probes that were not annotated.\n"
+)
+
+# Add the data from annot using index as a key, create state locus column and
+# remove unnecessary column:
+probe_list_annotated %<>%
+  # Add annot data:
+  dplyr::left_join( . , annot, by = "ind") %>% 
+  # Create state locus column:
+  mutate( state_locus = ifelse( is.na(ind)
+                                , yes = NA
+                                , no = paste0( chrom
+                                               , ":"
+                                               , chromStart
+                                               , "-"
+                                               , chromEnd )
+  ) ) %>% 
+  # Remove unnecessary columns:
+  select( probe_id, probe_chr, probe_coord, state_locus, state )
+
+}) 
+
+
+probe_list_annotated %>% 
+  head() %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+probe_list_annotated %>% 
+  filter( !is.na( state ) ) %>% 
+  head() %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+probe_list_annotated %>% 
+  summarise( n()
+             , n_distinct( probe_id )
+             , sum( is.na(state) )
+             , sum( !is.na(state) )
+  ) %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+```
+
+
+# Inspect the resulting annotation
+
+
+```{r}
+# probe_list_annotated should be identical to probe_list if you remove the newly
+# added annotation columns:
+if( all.equal( probe_list_annotated %>% select(-state, -state_locus)
+               , probe_list ) == FALSE ){
+  stop( "probe_list is not identical to the first 3 columns of "
+        , "probe_list_annotated! That means that something has gone wrong." )
+}
+
+# Probe distribution across the states:
+probe_list_annotated %>%
+  # Make column with number of full-stack state:
+  mutate( state_number = as.integer( gsub("_.*$", "", state )) ) %>%
+  count( state_number, state ) %>%
+  janitor::adorn_totals() %>% 
+  gt::gt() %>%
+  gt::fmt_integer() %>% 
+  gt::tab_options(table.font.size = "x-small")
+
+# Warning if there are some states in the annotation file that got zero probes
+# with overlapping loci:
+if( length( 
+  setdiff( unique( annot$state ), unique( probe_list_annotated$state ) ) 
+) > 0 ){
+  warning( 
+    "Zero EWAS probes were annotated with the following full-stack states:\n"
+    , paste( sort( 
+      setdiff( unique( annot$state ), unique( probe_list_annotated$state ) )
+    ) , collapse = ", " )
+  )
+}
+```
+
+
+# Probes that were not annotated
+
+It is theoretically possible that some EWAS probes might not get annotated due to having a coordinate that does not overlap with any of the loci in the Vu & Ernst annotation file.
+If this occurs, export a data frame with these EWAS probes, and then remove them from the annotated probe list.
+
+```{r}
+# Extract any probes that were not annotated:
+probe_list_not_annotated <- probe_list_annotated %>% 
+  filter( is.na(state) | is.na(state_locus) )
+
+# Print warning if some probes were not annotated:
+if( nrow(probe_list_not_annotated) > 0 ){
+  message( 
+  nrow( probe_list_not_annotated )  
+  , " EWAS probes were not annotated due to having loci that do not overlap "
+  , "with any of the annotations [chromStart, chromEnd] intervals. These probes"
+  , " will be removed."
+  )
+}
+
+probe_list_not_annotated %>% 
+  head() %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small")
+
+# Add column with "exclusion reason":
+probe_list_not_annotated %<>% 
+  select( probe_id ) %>% 
+  mutate( exclusion_reason = "probe was not annotated" )
+
+probe_list_not_annotated
+
+# Export the df for later reference:
+probe_list_not_annotated %>% 
+   readr::write_tsv( .
+                    , file = not_annotated_probe_path
+                    , col_names = TRUE
+  )
+```
+
+
+
+# Remove the non-annotated probes (if any) from the probe list
+
+Make the annotated probe list ready for export.
+
+```{r}
+probe_list_annotated %>% dim()
+probe_list_annotated %<>% 
+  filter( !(probe_id %in% probe_list_not_annotated$probe_id) )
+probe_list_annotated %>% dim()
+probe_list_annotated
+
+# Stop if the annotated probe list is empty. The user has to remove this
+# chromosome from the chr_numbers argument if their second omics layer data does
+# not contain any probes that fall within the start and end coordinates of any
+# of the annotations in their annotation file.
+if( nrow(probe_list_annotated) == 0 ){
+  stop( "None of the second omics layer entities located on chromosome "
+        , chr_number
+        , " overlap with a [chromStart, chromEnd] interval belonging to an "
+        , "annotation in the provided annotation file."
+        , "\nThe user must remove this chromosome number from the "
+        , "`chr_numbers` argument, and run the pipeline again, in order for the"
+        , " pipeline to be able to execute all the preprocessing stages from "
+        , "start to finish."
+  )
+}
+```
+
+
+
+# Export annotated probe list
+
+```{r}
+probe_list_annotated %>% feather::write_feather( ewas_probe_annot_path )
+```
+
+
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

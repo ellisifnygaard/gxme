@@ -1,0 +1,550 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 21
+  # (root_dir = the chromosome subdirectory)
+  # root_dir: ""
+  # root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr19_parallel_processing_partition"
+  root_dir: "C:/Temp/edj079/chromosomes/Chr21"
+  
+  # The most updated SNP list: (NB. No script for 0408 as of yet, use SNP list
+  # from 0407
+  # snp_list_path: "0407/0407_snp_list.feather"
+    
+  # GWAS fileset to make haplin-ready:
+  # gwas_fileset_dir: "0409" # "hard-code" gwas dir
+  # gwas_fileset_name: "0409_gwas" # "hard-code" gwas fileset name
+
+  # PLINK memory (OPTIONAL):
+  # (to be used with the "--memory" flag)
+  # Can be used to ensure that PLINK has enough RAM for its main workspace.
+  plink_memory_mb: !r NA
+  # plink_memory_mb: 500
+  # plink_memory_mb: 42147
+  
+  # PLINK timeout 
+  # (maximum number of seconds a call to plink.exe can take before it's stopped)
+  plink_timeout: 300
+  
+  stage_dir: "0502"
+title: "`r paste0('0502 - Make GWAS Data Ready for Haplin - Chromosome ', params$chr_number) `"
+---
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+# Root directory:
+root_dir <- params$root_dir
+
+# Stage directory:
+stage_dir <- params$stage_dir
+
+# THE MOST UPDATED SNP LIST
+
+# Specify path to the last SNP list that was generated before this stage
+snp_list_path <- file.path( "0407", "0407_snp_list.feather" )
+
+# GWAS fileset 
+gwas_fileset_dir <- "0409" # "hard-code" gwas dir
+gwas_fileset_name <- "0409_gwas" # "hard-code" gwas fileset name
+gwas_fileset_path <- file.path(gwas_fileset_dir, gwas_fileset_name)
+
+# Path for GWAS data exported during this stage (minus file extensions):
+gwas_stage_dir_path <- file.path( stage_dir, paste0( stage_dir, "_gwas" ) )
+
+# PLINK-related
+
+# Plink memory:
+plink_memory_mb <- params$plink_memory_mb
+```
+
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  unlink( file.path( stage_dir, "*" ), recursive = TRUE, force = TRUE )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+
+## Files used by this script
+
+-   `r  paste0( gwas_fileset_dir, "/", gwas_fileset_name, ".bim" )`
+  
+-   `r snp_list_path`
+
+## Files produced by this script
+
+-   `r `   
+  
+- `r paste0( gwas_stage_dir_path, ".ped/.map")` 
+  
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  # , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+options(scipen = 20)
+```
+
+## Packages
+
+```{r}
+library(Haplin)
+library(dplyr)
+library(feather)
+library(gt)
+library(magrittr)
+library(readr)
+```
+
+
+# Create .ped and .map Fileset
+
+## First check that the PLINK binary filesets and the SNP list contain the exact same SNPs
+
+```{r}
+# Import the most updated SNP list:
+snp_list <- feather::read_feather( snp_list_path )
+
+# Import bim file from 0409:
+bim <- readr::read_delim(
+  paste0( gwas_fileset_path, ".bim")
+  , col_names = c( "chr", "snp", "pos", "coord", "allele_1", "allele_2" )
+  , show_col_types = FALSE
+)
+
+if( !all( bim$snp %in% snp_list$snp ) ){
+  stop( "There are SNPs in "
+        , gwas_fileset_path
+        , " that are not in "
+        , snp_list_path )
+}
+if( !all( snp_list$snp %in% bim$snp ) ){
+  stop( "There are SNPs in "
+        , snp_list_path 
+        , " that are not in "
+        , gwas_fileset_path
+  )
+}
+```
+
+
+## Use PLINK to Export GWAS Data to .ped and .map Fileset
+
+```{r}
+# (Adapted from code in 0503b)
+plink_command <- paste0( 
+  "plink "
+  # Choose fileset from 0409:
+  , "--bfile ", gwas_fileset_path
+  
+  # Recode allele values to A/C/G/T 
+  # (commented out as I think it may be unnecessary)
+  # ,  " --alleleACGT" # recode allele values to A/C/G/T
+  
+  # Create new fileset (default: .ped + .map files)
+  ,  " --recode"
+  
+  # Output fileset name and location
+  , " --out ", gwas_stage_dir_path
+  
+  # Tell PLINK how much memory to reserve for its main workspace
+  , ifelse( is.na(plink_memory_mb)
+            , yes = "" # if not specified, don't add --memory flag
+            , no = paste0( " --memory ", plink_memory_mb ) )
+)
+
+message( "Running PLINK using the following command:\n"
+         , plink_command )
+
+output_msg <- system( plink_command, intern = TRUE, timeout = plink_memory_mb )
+cat(output_msg, sep = "\n")
+
+# Stop if .ped and .map files were not successfully generated
+if( !( file.exists( paste0(gwas_stage_dir_path, ".ped" ) ) &
+    file.exists( paste0(gwas_stage_dir_path, ".map" ) ) )
+){
+  stop( 
+    "Exporting GWAS data as.ped and .map fileset to stage directory failed.\n"
+    , "PLINK command:\n"
+    , plink_command
+    , "Output message:\n"
+    , paste0(output_msg, sep = "\n") 
+  )
+}
+```
+
+
+## Metadata .map/.ped fileset 
+
+```{r}
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = paste0( stage_dir, "_gwas") 
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( title = md(
+    paste0( "PLINK-generated .ped + .map files metadata - Chromosome "
+            , params$chr_number)
+  ) )
+```
+
+
+# Add Header Line to .map File
+
+**Note:** As of Haplin version 7.3.1, you can specify whether the the map file has a header or not with the argument `map.header`. I chose to specify `map.header = TRUE` and just keep the remaining code as is in the interest of time. Code in stage 0701 is built on the fact that the map file has these exact column names and I do not have time to alter it at the time of writing this.
+
+Judging by the PLINK documentation of the --recode flag, it does not appear to be possible to get PLINK to generate map files *with* column names/a header line.  
+
+Add header with column names to the `.map` file so that Haplin creates an object where `aux$marker.names` contains the SNP IDs. The pipeline relies on `aux$marker.names` when subsetting the GWAS data during the SNP-by-SNP analysis.
+
+If the `.map` file does not have a header line, `Haplin::genDataRead` generates dummy marker names due to line 54 in `Haplin/R/f.create.snp.names.R`:  
+```
+marker.names <- read.table( map.file, header = TRUE, stringsAsFactors = FALSE )
+```
+(`header = TRUE` is causing the problem. This argument should be parametrised so that the user can specify whether the map file has a header when using `Haplin::genDataRead` )
+
+```{r}
+# Import map file assuming that there is a header:
+map <- readr::read_delim( paste0(gwas_stage_dir_path, ".map" )
+                          , col_names = TRUE )
+colnames(map)
+
+# Import SNP list:
+snp_list <- feather::read_feather( snp_list_path )
+
+# Check if the name of the first column is the chromosome number in character
+# format, and if the name of the second column is a SNP ID . If this is the
+# case, then the map file does not have a header line, and we must add one.
+if( colnames(map)[1] == as.character(chr_number) &
+    colnames(map)[2] %in% snp_list$snp ){
+  # The "name" of column 2 is a SNP ID, i.e. we need to add a header line.
+  # Import map file again with col_names = FALSE:
+  map <- readr::read_delim( paste0(gwas_stage_dir_path, ".map" )
+                            , col_names = FALSE )
+  colnames(map)
+  
+  # Add column names:
+  map_colnames <- c( "chrom", "snp", "a", "b" )
+  colnames(map) <- map_colnames
+  
+  # Export map file with header line:
+  readr::write_tsv( map
+                    , file = paste0(gwas_stage_dir_path, ".map" )
+                    , col_names = TRUE
+                    , append = FALSE # overwrite the existing map file w/o header
+  )
+  
+  # Check that header was successfully added:
+  map <- readr::read_delim( paste0(gwas_stage_dir_path, ".map" ) )
+  stopifnot( identical( colnames(map), map_colnames ) )
+  
+}
+
+# At this point, the imported map should have a header.
+
+# Compare the SNP IDs in map file to SNP list:
+stopifnot( all( snp_list$snp %in% map$snp ) )
+stopifnot( all( map$snp %in% snp_list$snp ) )
+# stopifnot( all( snp_list %>% arrange(snp_coord) %>% pull(snp) == map$snp ) )
+
+#xxx The SNP list from 0407 is sorted alphabetically by SNP ID, so we have to use %in% instead of ==. Look into whether there is a particular reason for the SNP list being sorted alphabetically.
+```
+
+
+# Create Haplin fileset (.ffData and .RData files)
+
+## Create `ffarchive` using `Haplin::genDataRead()`
+
+```{r}
+# Read ped/map fileset and export an ffarchive containing the GWAS data:
+gwas_haplin <- Haplin::genDataRead(
+  file.in = paste0(gwas_stage_dir_path, ".ped" )
+  , file.out = paste0(stage_dir, "_gwas")
+  , dir.out =  stage_dir
+  , format = "ped"
+  , map.file = paste0(gwas_stage_dir_path, ".map" )
+  , map.header = TRUE
+  , overwrite = TRUE
+)
+class(gwas_haplin)
+gwas_haplin$aux$marker.names %>% head()
+
+# Stop if the .ffData and .RData do not exist:
+stopifnot( file.exists( 
+  file.path( root_dir, stage_dir, paste0(stage_dir, "_gwas_gen.ffData") )
+) )
+stopifnot( file.exists( 
+  file.path( root_dir, stage_dir, paste0(stage_dir, "_gwas_gen.RData") )
+) )
+```
+
+## Metadata `ffarchive`
+
+```{r}
+metadata <- file.info(
+  list.files( path = stage_dir
+              , pattern = paste0( stage_dir, "_gwas_gen") 
+              , full.names = TRUE )
+  , extra_cols = FALSE )
+
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime )
+  
+metadata %>%
+  gt::gt() %>%
+  tab_options( table.font.size = "small" ) %>% 
+  opt_row_striping() %>% 
+  fmt_integer( . , columns = size, use_seps = TRUE) %>%
+  tab_header( title = md(
+    paste0( "`ffarchive` containing `haplin.data` metadata - Chromosome "
+            , params$chr_number)
+  ) )
+```
+
+
+# Check the newly generated Haplin GWAS fileset/ffarchive
+
+
+```{r}
+# Compare the SNP IDs in SNP list and gwas_haplin:
+stopifnot( 
+  "There are SNPs in the SNP list that are missing from the newly generated Haplin GWAS fileset!" =
+  all( snp_list$snp %in% gwas_haplin$aux$marker.names ) )
+stopifnot(
+  "There are SNPs in the newly generated Haplin GWAS fileset that are not present in the SNP list!" =
+  all( gwas_haplin$aux$marker.names %in% snp_list$snp )
+  )
+
+# Check that the number of SNPs in the haplin.data = the number of SNPs in SNP
+# list:
+stopifnot( length(snp_list$snp) == Haplin::nsnps(gwas_haplin)  )
+
+# Check that the haplin.data contains the same IDs as in the fam file from 0409:
+
+# Import the fam file from 0409:
+fam <- readr::read_delim(
+  file.path( root_dir, gwas_fileset_dir, paste0( gwas_fileset_name, ".fam" ) )
+  , col_names = c( "id.fam", "id", "id.f", "id.m", "sex", "cc" )
+  , show_col_types = FALSE
+)
+# Create column with individual ID (xxxx_01, xxxx_02, ... )
+fam <- fam %>% 
+  mutate( id_unique = paste0( id.fam, "_", sprintf("%02d", id ) ) )
+
+# Extract fam data from haplin.data$cov.data and create df with column with
+# individual ID (xxxx_01, xxxx_02, ... )
+fam_gwas_haplin <- as.data.frame.matrix( gwas_haplin$cov.data ) %>% 
+  mutate( id_unique = paste0( 
+    as.numeric(id.fam), "_", sprintf("%02d", as.numeric(id.c) )
+  ) )
+
+# Stop unless IDs in fam file are identical to IDs in newly produced
+# haplin.data:
+stopifnot( all( sort( fam$id_unique ) == sort(fam_gwas_haplin$id_unique ) ) )
+
+```
+
+
+# Check the newly generated `ffarchive`
+
+
+```{r}
+# Load the data from the newly generated ffarchive 
+gwas_haplin <- Haplin::genDataLoad(
+  filename = paste0(stage_dir, "_gwas")
+  , dir.in =  stage_dir
+)
+class(gwas_haplin)
+gwas_haplin$aux$marker.names %>% head()
+
+# Compare the SNP IDs in SNP list and gwas_haplin:
+stopifnot( all( snp_list$snp %in% gwas_haplin$aux$marker.names ) )
+
+# Check that the number of SNPs in the haplin.data = the number of SNPs in SNP
+# list:
+stopifnot( length(snp_list$snp) == Haplin::nsnps(gwas_haplin)  )
+
+# Check that the haplin.data contains the same IDs as in the fam file from 0409:
+
+# Extract fam data from haplin.data$cov.data and create df with column with
+# individual ID (xxxx_01, xxxx_02, ... )
+fam_gwas_haplin <- as.data.frame.matrix( gwas_haplin$cov.data ) %>% 
+  mutate( id_unique = paste0( 
+    as.numeric(id.fam), "_", sprintf("%02d", as.numeric(id.c) )
+  ) )
+
+# Stop unless IDs in fam file are identical to IDs in newly produced
+# haplin.data:
+stopifnot( all( sort( fam$id_unique ) == sort(fam_gwas_haplin$id_unique ) ) )
+
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r as.numeric( script_execution_time, units = "mins" )` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

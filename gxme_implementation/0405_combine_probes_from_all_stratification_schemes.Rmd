@@ -1,0 +1,381 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    # toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  chr_number: 19
+  
+  # (root_dir = the chromosome subdirectory)
+  # (is dependent on chr_number, so its initiated here, but updated later) 
+  root_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/Chr**_parallel_processing_partition"
+  
+  # Stratification scheme definitions:
+  scheme_states: !r c( "A1_TSS1" = "98_TSS1", "A2_TSS2" = "99_TSS2", "Z_znf1" = "84_znf1", "Z_znf2" = "85_znf2" )
+  
+  # Directory to export resulting files to:
+  stage_dir: "0405"
+
+title: "`r paste0('0405 Combine the EWAS probes from all stratification schemes - Chromosome ', params$chr_number) `"
+---
+
+
+```{r}
+# Start timer:
+start_time <- Sys.time()
+```
+
+
+Combine the stratification scheme-specific files from 0404 into one file, as well as produce tables with overview of number of probes/state loci per scheme and chromosome.
+
+
+# Make parameters into variables
+
+The pipeline won't be Rmarkdown-based, so make variables containing the parameters stated in the YAML so that the process with building the package later won't be too arduous.
+
+```{r}
+chr_number <- params$chr_number
+
+root_dir <- params$root_dir
+
+scheme_states <- params$scheme_states
+
+stage_dir <- params$stage_dir
+
+# Specify path(s) of the scheme-specific file(s) produced in 0404 with the
+# scheme-assigned probes :
+scheme_info_df <- data.frame(
+  scheme = names(scheme_states)
+  , state = scheme_states
+  , path = file.path( "0404", paste0( "0404_"
+                                      , names(scheme_states)
+                                      , "_all_scheme_probes.feather" ) )
+)
+
+# Specify path for the data frame with the probes from all of the schemes:
+all_scheme_probes_path <- file.path( stage_dir
+                                  , paste0( stage_dir
+                                  , "_all_scheme_probes.feather" ) )
+```
+
+
+
+# Create stage directory for output
+
+```{r}
+if( !dir.exists( stage_dir ) ){
+  dir.create( stage_dir )
+}
+
+# Delete files (if any) left over from previous runs:
+files_in_stage_dir <- list.files( stage_dir, full.names = TRUE )
+
+if( length(files_in_stage_dir) > 0 ){
+  message( "Deleting files that were already present in ", stage_dir, "..." )
+  lapply( files_in_stage_dir, file.remove )
+}
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+
+```{r}
+for( i in 1:length( names(params$scheme_states)) ){
+  cat( file.path(
+    root_dir, "0404",
+    paste0( "0404_"
+            , names(params$scheme_states)[i]
+            , "_all_scheme_probes.feather\n\n" ) )
+  )
+}
+```
+
+## Files produced by this script
+
+-   `r all_scheme_probes_path` -
+A data frame containing all probes assigned to a scheme. One file per chromosome.
+    
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  # , include = FALSE # use to check report text without running any chunk code
+  , warning = FALSE # hide warnings
+  , message = TRUE # hide messages
+  )
+
+options( scipen = 20)
+```
+
+
+## Packages
+
+```{r}
+library(dplyr)
+library(feather)
+library(gt)
+library(magrittr)
+```
+
+# Import data
+
+## Import annotated probes from all the schemes implemented in 0404
+
+### File metadata
+
+```{r }
+metadata <- file.info( 
+  list.files(
+    path = file.path( root_dir, "0404" )
+    , full.names = TRUE
+  )
+  , extra_cols = FALSE
+)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime ) %>% 
+  filter( grepl( "scheme_probes", file) ) %>% 
+  mutate( 
+    file = gsub( file.path( root_dir, "0404"), "", file)
+  )
+
+metadata %>% 
+  gt::gt() %>% 
+  fmt_integer( . , columns = 2, use_seps = TRUE) %>% 
+  tab_options( table.font.size = "x-small") %>% 
+  opt_row_striping()
+  
+```
+
+### Import files from all schemes with all chromosomes
+
+```{r}
+# For all schemes...
+probes <- lapply(1:nrow(scheme_info_df), function(s){
+  file_name <- scheme_info_df$path[s]
+  
+  # If the file with this combination of scheme name and chr exists, import
+  # from 0404 and place in list:
+  if( file.exists(file_name) ){
+    feather::read_feather( file_name ) # return imported file
+  } else {
+    # If not, something internal has gone wrong:
+    warning( "file_name = "
+             , file_name
+             , " does not exist! It will not be included in the combined list "
+             , "of all scheme-assigned probes." )
+    return()
+  }
+  
+})
+length(probes)
+sapply(probes, function(x) unique(x$scheme))
+sapply(probes, dim)
+```
+
+
+# Combine all the scheme-specific data frames into one large data frame
+
+```{r}
+# Combine all data frames into one data frame:
+probes <- dplyr::bind_rows( probes )
+dim(probes)
+
+probes %>% 
+  head() %>% 
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small")
+```
+
+
+
+# Summary of the data from all the 0404 files
+
+```{r message=FALSE}
+probes %>% 
+  group_by( scheme, probe_chr) %>% 
+  summarise(
+    "No of rows" = n()
+    , "No of unique schemes present" = n_distinct( scheme )
+    , "No of unique EWAS probes" = n_distinct( probe_id )
+    , "No of unique combinations of probe ID and scheme" = 
+      n_distinct( scheme, probe_id )
+    , "No of unique state loci (intervals defined as one feature)" = 
+      n_distinct( state_locus )
+    , "No of unique combinations of probe ID and state loci" = 
+      n_distinct( state_locus, probe_id )
+  ) %>%
+  ungroup() %>% 
+  # Transpose by pivot longer and then pivot wider:
+  tidyr::pivot_longer( cols = -c(scheme, probe_chr)
+                       , names_to = "stat"
+                       , values_to = "n" ) %>% 
+  tidyr::pivot_wider( names_from = scheme, values_from = n ) %>% 
+  janitor::adorn_totals( where = "col", name = "All schemes" ) %>% 
+  # Group by chromosome:
+  group_by( probe_chr ) %>% 
+  gt::gt( rowname_col = "stat" ) %>%
+  tab_options( table.font.size = "x-small") %>%
+  tab_options( row_group.background.color = "#fff8f1") %>% 
+  fmt_integer( . , columns = -c(1:2), use_seps = TRUE) %>%
+  opt_row_striping() %>% 
+  gt::tab_header( 
+    title =  md( "Summary of the data from 0404, i.e. all the probes that were 
+    assigned to a scheme in 0404.  
+    Grouped by scheme." )
+    , subtitle = md("0404_[scheme_name]_all_scheme_probes.feather  
+                    Probes from all stratification schemes combined")
+    ) %>% 
+  opt_align_table_header( "left" )
+```
+
+
+# Export data frame
+
+Export the large combined data frame with all the EWAS probes assigned to a stratification scheme.
+
+```{r}
+message("Exporting ", all_scheme_probes_path, ". . .")
+probes %>% 
+    feather::write_feather( . , all_scheme_probes_path)
+
+metadata <- file.info( all_scheme_probes_path, extra_cols = FALSE)
+metadata <- cbind( data.frame( "file" = rownames(metadata))
+                   , data.frame( metadata, row.names = NULL) ) %>% 
+  select( -isdir, -mode, -atime ) %>% 
+  filter( grepl( "scheme_probes", file) )
+metadata %>%
+  gt::gt() %>% 
+  fmt_integer() %>% 
+  tab_options( table.font.size = "x-small")
+```
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+# Log execution time
+
+Export data frame with execution time for later collation with execution times of the other stages so that one can create tables with the execution time chromosome and/or stage.
+
+```{r}
+# Create folder for csv file if it does not already exist
+pipeline_dir <- dirname( dirname( root_dir ) )
+stage_execution_time_dir <- 
+  file.path( pipeline_dir, "Results", "Preprocessing_stage_execution_times" )
+
+if( !dir.exists( stage_execution_time_dir ) ){
+  dir.create( stage_execution_time_dir )
+}
+
+exec_time_df <- data.frame(
+  stage = stage_dir
+  , chr = chr_number
+  , script_execution_time_seconds = 
+    as.numeric( script_execution_time, units = "secs" )
+  , script_start_time = start_time
+  , computername = Sys.getenv("COMPUTERNAME")
+  , pipeline_dir = pipeline_dir
+  , cpu_model = benchmarkme::get_cpu()$model_name
+  , no_of_cores = benchmarkme::get_cpu()$no_of_cores
+  , ram_iec_units = print(benchmarkme::get_ram(), unit_system = "iec")
+  , system_memory_total_Mb = ps::ps_system_memory()$total / 1024^2
+  , system_memory_avail_Mb = ps::ps_system_memory()$avail / 1024^2
+  , R_platform = R.version$platform
+  , R_version = R.version$version.string
+  , Platform_GUI = .Platform$GUI
+  , RStudio_version = ifelse( .Platform$GUI == "RStudio"
+                              , yes = as.character(rstudioapi::getVersion())
+                              , no = NA )
+)
+
+# Display data frame with log data frame
+exec_time_df %>% 
+  gt::gt() %>% 
+  tab_options( table.font.size = "x-small" ) %>% 
+  tab_header( title = md( paste0( "Stage execution time log - Stage "
+                                      , stage_dir
+                                      , " - Chromosome "
+                                      , chr_number )
+  ) )
+
+# Export data frame to stage_execution_time_dir
+exec_time_df %>% readr::write_csv2( 
+  . 
+  , file = file.path( stage_execution_time_dir
+                 , paste0( stage_dir, "_", sprintf("chr%02d.csv", chr_number )))
+  , append = FALSE # overwrite existing files
+)
+```
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+

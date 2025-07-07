@@ -1,0 +1,1049 @@
+---
+author: "`r Sys.getenv('USERNAME')`"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: hide # hide/show
+    toc: true
+    toc_float: true
+    number_sections: true
+    # self_contained: no
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 80
+params:
+  # WHETHER OR NOT TO DELETE FILES ALREADY PRESENT IN THE CHROMOSOME DIRECTORY 
+  # AND SUBDIRECTORIES WITHOUT WARNING
+  # delete_existing_files: TRUE # hard-code to TRUE
+  # (If set to FALSE, an error is thrown if existing files are detected)
+  
+  # CHROMOSOMES TO BE STUDIED
+  # chr_numbers: !r 1:22
+  chr_numbers: !r c(1,4,5,7,18,21)
+  
+  # CHROMOSOME DIRECTORY
+  # (The root folder which will contain all the chromosome-specific 
+  # subdirectories) 
+  chromosome_dir: !r here::here( "chromosomes")
+  # chromosome_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/2024-01-15_test_pipeline_run"
+  
+  # EWAS DATA
+  ewas_fileset_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA EWAS/_0008"
+  # A regular expression to be passed on as the 'pattern' argument in 
+  # base::list.files() when identifying which EWAS filesets to copy to subdirs:
+  ewas_fileset_name_base_regex: "_0008_ewas_chr[[:digit:]]{2}"
+  
+  ewas_map_file_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA EWAS/0301i"
+  ewas_map_file_name_base_regex: "^ewas_map_hm450k_hg19_chr[[:digit:]]{1,2}"
+  
+  # GWAS FILE
+  # The folder where the GWAS filesets to be used in the pipeline are stored:
+  gwas_fileset_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA GWAS/_0006"
+  # A regular expression to be passed on as the 'pattern' argument in 
+  # base::list.files() when identifying which GWAS filesets to copy to subdirs:
+  gwas_fileset_name_base_regex: "^Chr[[:digit:]]{1,2}_0006"
+
+  # MQTL FILES
+  mqtl_file_name_base_regex: "_0009_godmc_mqtl_associations_hg19_chr[[:digit:]]{1,2}"
+  mqtl_file_dir: "S:/Project/SAM/Julia/Ellisif/Paper 1/EWAS QC/2025-03-19 Flagged mQTL pairs"
+  
+  # EWAS PROBE ANNOTATION FILE
+  ewas_annotation_file_path: "S:/Project/SAM/Julia/Ellisif/Paper 1/DATA EWAS/Full-stack ChromHMM annotations/hg19_genome_100_segments.bed.gz"
+  
+  # PLINK-RELATED
+  plink_exe_path: "S:/Project/SAM/Julia/Ellisif/Paper 1/PLINK/plink_win64_20220402/plink.exe"
+  
+title: "Set up chromosome directory and create chromosome-specific subdirectories with necessary data and tools"
+---
+
+```{r start_timer}
+# Start timer:
+start_time <- Sys.time()
+```
+
+# Make parameters into variables
+
+
+```{r}
+# WHETHER OR NOT TO DELETE FILES ALREADY PRESENT IN THE CHROMOSOME DIRECTORY 
+# AND SUBDIRECTORIES WITHOUT WARNING
+delete_existing_files <- TRUE # hard-code to TRUE
+
+# CHROMOSOMES TO BE STUDIED
+chr_numbers <- params$chr_numbers
+
+# CHROMOSOME DIRECTORY
+# (The root folder which will contain all the chromosome-specific 
+# subdirectories) 
+chromosome_dir <- params$chromosome_dir
+
+# EWAS DATA
+ewas_fileset_dir <- params$ewas_fileset_dir
+ewas_fileset_name_base_regex <- params$ewas_fileset_name_base_regex
+
+ewas_map_file_dir <- params$ewas_map_file_dir
+ewas_map_file_name_base_regex <- params$ewas_map_file_name_base_regex
+
+# MQTL FILES
+mqtl_file_name_base_regex <- params$mqtl_file_name_base_regex
+mqtl_file_dir <- params$mqtl_file_dir
+
+
+ # EWAS PROBE ANNOTATION FILE
+ewas_annotation_file_path <- params$ewas_annotation_file_path
+
+
+# GWAS FILE
+# The folder where the GWAS filesets to be used in the pipeline are stored:
+gwas_fileset_dir <- params$gwas_fileset_dir
+# A regular expression to be passed on as the 'pattern' argument in 
+# base::list.files() when identifying which GWAS filesets to copy to subdirs:
+gwas_fileset_name_base_regex <- params$gwas_fileset_name_base_regex
+
+
+# PLINK
+plink_exe_path <- params$plink_exe_path
+
+```
+
+
+# Initial information and set-up
+
+```{r include=FALSE}
+# KNIT HOOK THAT ALLOWS FOR FOLDING CHUNK OUTPUT WHEN SPECIFIED
+local({
+  hooks <-  knitr::knit_hooks$get()
+  hook_foldable <- function( type ){
+    force(type)
+    function( x, options ){
+      res <-  hooks[[type]](x, options)
+
+      if( base::isTRUE( options[[paste0( "fold.", type)]])){
+
+        paste0(
+          # "\n\n<details><summary>", type, "</summary>\n\n",
+          "<details><summary>Click here</summary>\n\n",
+          res,
+          "\n\n</details>"
+        )
+      }
+      else return(res)
+    }
+  }
+
+  knitr::knit_hooks$set(
+    output = hook_foldable("output"),
+    plot = hook_foldable("plot")
+  )
+})
+```
+
+## Session info
+
+Working directory: `r getwd()`\
+R_LIBS_USER: `r Sys.getenv('R_LIBS_USER')`\
+R_HOME: `r gsub(pattern = "~", replacement = " ~ ", Sys.getenv('R_HOME'))`\
+HOME: `r Sys.getenv('HOME')`
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
+
+## Files used by this script
+  
+See the tables with file metadata.
+
+
+## Files produced by this script
+
+See the tables with file metadata.
+
+
+## Rmd set up
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE
+  )
+options(scipen = 20)
+```
+
+
+## Packages
+
+```{r}
+library(dplyr)
+library(gt)
+```
+
+
+# Chromosome directory - a folder for containing all the separate chromosome subdirectories
+
+If it does not already exist, then create it.
+
+```{r}
+if( !dir.exists( chromosome_dir ) ){
+  message("Creating chromosome directory using the following path:"
+          , chromosome_dir )
+  dir.create( chromosome_dir )
+}
+
+# Delete files (if any) already present in chromosome directory (ignore folders):
+files_in_chromosome_dir <- list.files( chromosome_dir
+                                     # Ignore folders:
+                                     , pattern = "\\.[[:alpha:]]*$"
+                                     , full.names = TRUE )
+
+if( length(files_in_chromosome_dir) > 0 ){
+  if( delete_existing_files == TRUE ){
+    message( "Deleting files that were already present in ", chromosome_dir, "..." )
+    lapply( files_in_chromosome_dir, file.remove )
+  } else{
+    stop( "There is/are "
+          , length(files_in_chromosome_dir)
+          , " existing file(s) in the provided chromosome directory and "
+          , "`delete_existing_files` = FALSE. "
+          , "\nDo one of the following:  
+          1) Remove these files from the chromosome directory, 
+          2) use `delete_existing_files` = TRUE, or
+          3) create a different, empty pipeline directory."
+          )
+  }
+}
+```
+
+
+# Create chromosome subdirectories - one subdirectory per chromosome to be studied
+
+If the subdirectories already exist, they are permanently deleted along with any files they may contain.
+
+```{r}
+# chr_numbers <- c(1,3,5,7)
+
+# (Use as.character(chr_numbers) so that USE.NAMES = TRUE works. This is useful
+# in cases where chr_number is not {1,2,3,4,...} but for example {1,5,22} )
+subdir_paths <- sapply( as.character(chr_numbers), function(chr){
+  
+  # Path to subdirectory:
+  subdir_path <- file.path( chromosome_dir
+                            , paste0( "Chr", sprintf( "%02d", as.integer(chr) ))
+  )
+  
+  # If subdir does not exist, create it:
+  if( !dir.exists( subdir_path ) ){
+    message( "Creating chromosome subdirectory at ", subdir_path, " ...\n")
+    dir.create( subdir_path )
+  } else{
+    # If subdir already exists, and 'delete_existing_files' = TRUE, then
+    # delete subdir + its contents permanently:
+    
+    if( delete_existing_files == TRUE ){
+      message( "Deleting the pre-existing chromosome subdirectory at "
+               , subdir_path
+               , " ...\n" )
+      unlink( subdir_path
+              , recursive = TRUE # delete the contents of folder + folder
+              , force = TRUE # override any read-only issues etc
+      )
+      # Then create a new, clean subdir:
+      message( "Creating new, empty chromosome subdirectory at "
+               , subdir_path
+               , " ...\n")
+      dir.create( subdir_path )
+    } else{
+      # If subdir already exists, and 'delete_existing_files' = TRUE, then
+      # keep the subdir as is and issue warning:
+      warning( subdir_path, " already exists and 'delete_existing_files'"
+               , " is set to FALSE.\nThis is not recommended.\n")
+    }
+  }
+  return( subdir_path )
+} 
+, simplify = TRUE # Return named vector...
+, USE.NAMES = TRUE # ... where the names = chromosome number as character
+)
+
+# Stop unless all subdirs exist:
+stopifnot( all( sapply(subdir_paths, dir.exists) == TRUE ) )
+
+# subdir_paths[as.character(3)]
+# subdir_paths[2]
+
+# If there already are files in any of the subdirs,
+# and `delete_existing_files` = FALSE => throw error. 
+# If `delete_existing_files` = TRUE => warn the user and delete.
+
+
+subdir_files <- lapply( chr_numbers, function(chr){
+  
+  subdir_path <- subdir_paths[as.character(chr)]
+  
+  # Return file paths of any files/folders already present in the subdir:
+  return( list.files( subdir_path, full.names = TRUE ) )
+
+})
+
+
+# # CODE FROM PREVIOUS VERSION WHERE 
+# subdir_files <- unlist( subdir_files )
+# 
+# if( length(subdir_files) >= 1 ){
+#   
+#  if( delete_existing_files == TRUE ){
+#     message( "Deleting all files and directories that were already present in"
+#              , " the chromosome subdirectories..."
+#     )
+#     # file_delete_status <- sapply( subdir_files, file.remove )
+#     file_delete_status <- sapply( subdir_paths, function(chr){
+#       message( "unlink ", file.path( chr, "*" ) )
+#       unlink( file.path( chr, "*" ), recursive = TRUE )
+#     })
+#     
+#     # Continue if all files were successfully deleted:
+#     if( all( file_delete_status == TRUE ) ){
+#       message("Files in subdirectories were successfully deleted.")
+#     } else{
+#       files_not_deleted <- names( which( file_delete_status == FALSE ) )
+#       stop("The following files were not deleted:\n"
+#            , paste( files_not_deleted, collapse = "\n")
+#            , "\n\nPlease remove them before running this script again."
+#       )
+#     }
+#     
+#   } else{
+#     stop( "There is/are "
+#           , length(subdir_files)
+#           , " existing file(s) across the chromosome subdirectories and "
+#           , "`delete_existing_files` = FALSE. "
+#           , "\nDo one of the following:  
+#           1) Remove all the files from the chromosome subdirectories, 
+#           2) use `delete_existing_files` = TRUE, or
+#           3) choose a different, empty chromosome directory."
+#           )
+#   }
+# }
+
+
+```
+
+
+# Copy EWAS map file to chromosome directories
+
+**One file per chromosome.**
+
+The names of the EWAS map files have to contain "chrxx", where xx is the chromosome number which has a leading zero if it is between 1 and 9 (i.e. Chromosome 1 => "chr01", etc.)
+
+```{r ewas_map_file}
+# The file extension (has to be feather):
+file_ext <- ".feather"
+
+ewas_map_file_name_pattern <- paste0( ewas_map_file_name_base_regex, file_ext )
+
+ewas_map_file_paths <- list.files(
+  path = ewas_map_file_dir
+  , pattern = ewas_map_file_name_pattern
+  , full.names = TRUE
+)
+ewas_map_file_paths %>% head(5)
+
+# Check that there isn't fewer files than chromosomes:
+stopifnot(
+  "The number of map files in 'ewas_map_file_dir' with basenames matching the pattern in 'ewas_map_file_name_base_regex' is smaller than the number of chromosomes to be studied!" =
+    length( ewas_map_file_paths ) >= length( unique(chr_numbers) )
+)
+
+
+# Divide the file paths into a list consisting of one vector per chromosome
+#( use sprintf since chr must have 2 digits)
+ewas_map_file_paths_list <- sapply( 
+  as.character( chr_numbers ), function(chr){ 
+    ewas_map_file_paths[ grepl(
+      paste0("chr", sprintf("%02d",as.integer(chr)), "[^0-9]")
+      , ewas_map_file_paths
+      # Ignore the casing of the letters in "chr" part of the regex/file names:
+      , ignore.case = TRUE 
+      )
+    ]
+  }, simplify = FALSE, USE.NAMES = TRUE )
+
+# If the list with file paths contains more than 1 path in one of the list
+# elements, then something is wrong with the regular expression and/or the
+# files. Throw error if this occurs:
+
+stopifnot(
+  "There must be exactly 1 feather file that can be matched to each chromosome number.
+  Please ensure that 'ewas_map_file_dir' only contains one file per chromosome." =
+    all( sapply( ewas_map_file_paths_list, length ) == 1 )
+)
+
+
+# Paths in the different chromosome directories to copy the map files to:
+# (keep the original file names)
+ewas_map_file_subdir_paths <- 
+  sapply( as.character( chr_numbers ), function(chr){
+  # sapply( as.character( sprintf("%02d",chr_numbers)), function(chr){
+    # Return paths to GWAS fileset in the chr subdir:
+    return( file.path( subdir_paths[chr]
+                       , base::basename( ewas_map_file_paths_list[[chr]] )
+    ) )
+  }, simplify = FALSE, USE.NAMES = TRUE )
+
+
+# Check that the chromosome order in the "to" paths are in the exact same order
+# as the "from" paths:
+stopifnot(
+  all( sapply( as.character( chr_numbers ), function(chr){
+    base::basename( ewas_map_file_paths_list[[chr]] ) == 
+      base::basename( ewas_map_file_subdir_paths[[chr]] )
+  }) )
+)
+
+# Copy the EWAS map files to their respective chromosome subdirs:
+system.time({
+  
+  # For each chromosome, copy the respective map file to its subdirectory:  
+  copied_ewas_map_metadata <- sapply( as.character(chr_numbers), function(chr){
+
+    # Copy file to the chr-specific directory:
+    copy_status <- file.copy( from = ewas_map_file_paths_list[[chr]]
+                              , to = ewas_map_file_subdir_paths[[chr]]
+                              , overwrite = TRUE
+                              # Preserve file date if possible:
+                              , copy.date = TRUE 
+    )
+    
+    # Stop if the fileset was not successfully copied
+    stopifnot( all(copy_status == TRUE) )
+    
+    # Get metadata of "original" file:
+    metadata1 <- file.info( ewas_map_file_paths_list[[chr]]
+                            , extra_cols = FALSE )
+    metadata1 <- cbind( data.frame( "file" = rownames(metadata1) )
+                        , data.frame( metadata1, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( grepl(
+        unique(tools::file_path_sans_ext(ewas_map_file_paths_list[[chr]]))
+               , file
+      ) )
+    # Get metadata of copied file:
+    metadata2 <- file.info( ewas_map_file_subdir_paths[[chr]]
+                            , extra_cols = FALSE )
+    metadata2 <- cbind( data.frame( "file" = rownames(metadata2) )
+                        , data.frame( metadata2, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( grepl(
+        unique(tools::file_path_sans_ext(ewas_map_file_subdir_paths[[chr]]))
+        , file ) )
+    
+    metadata <- dplyr::bind_rows( metadata1, metadata2) %>% 
+      # Add column with chr so that we can group the large combined table later:
+      mutate( chr = chr ) %>% 
+      select( chr, everything() ) %>% 
+      arrange( chr )
+    return(metadata)
+    
+  }, simplify = FALSE, USE.NAMES = TRUE )
+  
+})
+
+dplyr::bind_rows( copied_ewas_map_metadata ) %>% 
+  group_by( chr ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+```
+
+
+
+# Copy mQTL source file to chromosome directories
+
+**One file per chromosome.**
+
+The names of the mQTL source file have to contain "chrxx", where xx is the chromosome number which has a leading zero if it is between 1 and 9 (i.e. Chromosome 1 => "chr01", etc.)
+
+```{r mqtl_files}
+# The file extension (has to be feather):
+file_ext <- ".feather"
+
+mqtl_file_name_pattern <- paste0( mqtl_file_name_base_regex, file_ext )
+
+mqtl_file_paths <- list.files(
+  path = mqtl_file_dir
+  , pattern = mqtl_file_name_pattern
+  , full.names = TRUE
+)
+mqtl_file_paths %>% head(5)
+
+# Check that there isn't fewer files than chromosomes:
+stopifnot(
+  "The number of map files in 'mqtl_file_dir' with basenames matching the pattern in 'mqtl_file_name_base_regex' is smaller than the number of chromosomes to be studied!" =
+    length( mqtl_file_paths ) >= length( unique(chr_numbers) )
+)
+
+
+# Divide the file paths into a list consisting of one vector per chromosome
+#( use sprintf since chr must have 2 digits)
+mqtl_file_paths_list <- sapply( 
+  as.character( chr_numbers ), function(chr){ 
+    mqtl_file_paths[ grepl(
+      paste0("chr", sprintf("%02d",as.integer(chr)), "[^0-9]")
+      , mqtl_file_paths
+      # Ignore the casing of the letters in "chr" part of the regex/file names:
+      , ignore.case = TRUE 
+    )
+    ]
+  }, simplify = FALSE, USE.NAMES = TRUE )
+
+# If the list with file paths contains more than 1 path in one of the list
+# elements, then something is wrong with the regular expression and/or the
+# files. Throw error if this occurs:
+
+stopifnot(
+  "There must be exactly 1 feather file that can be matched to each chromosome number.
+  Please ensure that 'mqtl_file_dir' only contains one matching file per chromosome." =
+    all( sapply( mqtl_file_paths_list, length ) == 1 )
+)
+
+
+# Paths in the different chromosome directories to copy the map files to:
+# (keep the original file names)
+mqtl_file_subdir_paths <- 
+  sapply( as.character( chr_numbers ), function(chr){
+    # sapply( as.character( sprintf("%02d",chr_numbers)), function(chr){
+    # Return paths to GWAS fileset in the chr subdir:
+    return( file.path( subdir_paths[chr]
+                       , base::basename( mqtl_file_paths_list[[chr]] )
+    ) )
+  }, simplify = FALSE, USE.NAMES = TRUE )
+
+# Check that the chromosome order in the "to" paths are in the exact same order
+# as the "from" paths:
+stopifnot(
+  all( sapply( as.character( chr_numbers ), function(chr){
+    base::basename( mqtl_file_paths_list[[chr]] ) == 
+      base::basename( mqtl_file_subdir_paths[[chr]] )
+  }) )
+)
+
+
+# Copy the mQTL files to their respective chromosome subdirs:
+system.time({
+  # For each chromosome, copy the respective map file to its subdirectory:  
+  copied_mqtl_metadata <- sapply( as.character(chr_numbers), function(chr){
+    
+    # Copy file to the chr-specific directory:
+    copy_status <- file.copy( from = mqtl_file_paths_list[[chr]]
+                              , to = mqtl_file_subdir_paths[[chr]]
+                              , overwrite = TRUE
+                              # Preserve file date if possible:
+                              , copy.date = TRUE 
+    )
+    
+    # Stop if the fileset was not successfully copied
+    stopifnot( all(copy_status == TRUE) )
+    
+    # Get metadata of "original" file:
+    metadata1 <- file.info( mqtl_file_paths_list[[chr]]
+                            , extra_cols = FALSE )
+    metadata1 <- cbind( data.frame( "file" = rownames(metadata1) )
+                        , data.frame( metadata1, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( grepl(
+        unique(tools::file_path_sans_ext(mqtl_file_paths_list[[chr]]))
+        , file
+      ) )
+    # Get metadata of copied file:
+    metadata2 <- file.info( mqtl_file_subdir_paths[[chr]]
+                            , extra_cols = FALSE )
+    metadata2 <- cbind( data.frame( "file" = rownames(metadata2) )
+                        , data.frame( metadata2, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( grepl(
+        unique(tools::file_path_sans_ext(mqtl_file_subdir_paths[[chr]]))
+        , file ) )
+    
+    metadata <- dplyr::bind_rows( metadata1, metadata2) %>% 
+      # Add column with chr so that we can group the large combined table later:
+      mutate( chr = chr ) %>% 
+      select( chr, everything() ) %>% 
+      arrange( chr )
+    return(metadata)
+    
+  }, simplify = FALSE, USE.NAMES = TRUE )
+})
+
+dplyr::bind_rows( copied_mqtl_metadata ) %>% 
+  group_by( chr ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+```
+
+
+# Copy EWAS probe annotation file to chromosome directories
+
+**One file (Vu & Ernst) for all chromosomes.**
+
+```{r annotation_files}
+# The ewas_annotation_file_path argument has to be one string:
+stopifnot(
+  "`ewas_annotation_file_path` has to be a single string" =
+    length( ewas_annotation_file_path ) == 1 &
+    is.character( ewas_annotation_file_path )
+)
+
+# The file extension (has to be feather):
+stopifnot(
+  "The provided `ewas_annotation_file_path` must point to a .bed.gz file" =
+    grepl("\\.bed\\.gz$", ewas_annotation_file_path )
+)
+
+# Check that the file exists:
+stopifnot(
+  "`ewas_annotation_file_path` must point to a file that exists" =
+    file.exists( ewas_annotation_file_path )
+)
+
+
+# Paths in the different chromosome directories to copy the file to:
+# (keep the original file name)
+ewas_annotation_subdir_paths <- sapply( seq_along(chr_numbers), function(chr){
+  # Return paths to probe masking files in the chr subdir:
+  return( file.path( subdir_paths[chr]
+                     , base::basename( ewas_annotation_file_path )
+  ) )
+}, simplify = TRUE, USE.NAMES = TRUE )
+# Vector instead of list since we're only copying one file to the chr subdirs
+
+# Copy the EWAS probe masking file to all the chromosome subdirectories:
+system.time({
+  copy_status <- file.copy( from = ewas_annotation_file_path
+                            # Vector
+                            , to = ewas_annotation_subdir_paths
+                            , overwrite = TRUE
+                            # Preserve file date if possible:
+                            , copy.date = TRUE 
+  )
+})
+
+
+# Stop if the file was not successfully copied
+stopifnot( "Copying files from `ewas_annotation_file_path` failed" =
+             all(copy_status == TRUE) )
+
+# Get metadata of "original" file:
+metadata1 <- file.info( ewas_annotation_file_path
+                        , extra_cols = FALSE )
+metadata1 <- cbind( data.frame( "file" = rownames(metadata1) )
+                    , data.frame( metadata1, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime )
+
+# Get metadata of copies:
+metadata2 <- file.info( ewas_annotation_subdir_paths
+                        , extra_cols = FALSE )
+metadata2 <- cbind( data.frame( "file" = rownames(metadata2) )
+                    , data.frame( metadata2, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) 
+
+metadata <- dplyr::bind_rows( metadata1, metadata2) 
+
+
+dplyr::bind_rows( metadata ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+```
+
+
+
+# Copy `plink.exe` (v1.9) to chromosome directories
+
+
+```{r plink}
+# The plink_exe_path argument has to be one string:
+stopifnot(
+  "`plink_exe_path` has to be a single string" =
+    length( plink_exe_path ) == 1 &
+    is.character( plink_exe_path )
+)
+
+# The file extension (has to be .exe):
+stopifnot(
+  "The provided `plink_exe_path` must point to a .exe file" =
+    grepl("\\.exe$", plink_exe_path )
+)
+
+# Check that the file exists:
+stopifnot(
+  "`plink_exe_path` must point to a file that exists" =
+    file.exists( plink_exe_path )
+)
+
+
+# Check if `plink.exe` in `plink_exe_path` is the correct version.
+
+suppressWarnings(
+  output_message <- system2(tools::file_path_sans_ext(plink_exe_path)
+                            , stdout = TRUE, stderr = TRUE)
+)
+# (Use system2 so that spaces in path to plink.exe does not cause error)
+
+# Display the output message from running "plink":
+cat(output_message[1])
+
+
+
+# Warning if the output from the "plink" command does not start with 
+# "PLINK v1.9":
+if( !any( grepl("^PLINK v1.9", output_message[1]) ) ){
+  warning( "It appears that either `plink_exe_path` does not contain the "
+           , "required version of PLINK, or the test of plink.exe using "
+           , "the system2() function failed for some other reason.\n"
+           , " The .exe file will be copied to the chromosome subdirectories, "
+           , "but please ensure that you have supplied the correct plink.exe." 
+  )
+}
+
+# Paths in the different chromosome directories to copy the file to:
+# (keep the original file name)
+plink_exe_subdir_paths <- sapply( seq_along(chr_numbers), function(chr){
+  # Return paths to probe masking files in the chr subdir:
+  return( file.path( subdir_paths[chr]
+                     , base::basename( plink_exe_path )
+  ) )
+}, simplify = TRUE, USE.NAMES = TRUE )
+# Vector instead of list since we're only copying one file to the chr subdirs
+
+# Copy plink.exe to all the chromosome subdirectories:
+copy_status <- file.copy( from = plink_exe_path
+                          # Vector
+                          , to = plink_exe_subdir_paths
+                          , overwrite = TRUE
+                          # Preserve file date if possible:
+                          , copy.date = TRUE 
+)
+
+
+# Stop if the file was not successfully copied
+stopifnot( "Copying plink executables to chromosome directories failed" =
+             all(copy_status == TRUE) )
+    
+# Get metadata of "original" file:
+metadata1 <- file.info( plink_exe_path
+                        , extra_cols = FALSE )
+metadata1 <- cbind( data.frame( "file" = rownames(metadata1) )
+                    , data.frame( metadata1, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime )
+
+# Get metadata of copies:
+metadata2 <- file.info( plink_exe_subdir_paths
+                        , extra_cols = FALSE )
+metadata2 <- cbind( data.frame( "file" = rownames(metadata2) )
+                    , data.frame( metadata2, row.names = NULL) ) %>%
+  select( -isdir, -mode, -atime ) 
+
+metadata <- dplyr::bind_rows( metadata1, metadata2) 
+
+
+dplyr::bind_rows( metadata ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+```
+
+
+
+
+# Copy EWAS files to chromosome directories
+
+Some EWAS data might be so big that it is impractical to copy the all the data to each chromosome directory and warrant dividing up by chromosome like the GWAS data. This is currently not supported due to time constraints. 
+
+```{r ewas_files}
+# The different file extensions:
+file_ext <- c("_env.ffData", "_env.RData")
+
+
+ewas_fileset_name_pattern <- paste(
+  paste0( ewas_fileset_name_base_regex, file_ext )
+  , collapse = "|" )
+
+ewas_file_paths <- list.files(
+  path = ewas_fileset_dir
+  , pattern = ewas_fileset_name_pattern
+  , full.names = TRUE
+)
+ewas_file_paths %>% head(10)
+
+stopifnot(
+  "The number of filesets in 'ewas_fileset_dir' with basenames matching the pattern in 'ewas_fileset_name_base_regex'  is smaller than the number of chromosomes to be studied!" =
+    length( ewas_file_paths ) >= length( unique(chr_numbers) ) * 2
+)
+
+
+# Divide the file paths into a list consisting of one vector per chromosome
+ewas_file_paths_list <- sapply(as.character(chr_numbers), function(chr){
+  ewas_file_paths[ grepl(
+    paste0( sprintf( "chr%02d", as.integer(chr) ) , "[^0-9]" )
+    , ewas_file_paths
+    # Ignore the casing of the letters in "Chr" part of
+    # the regex/file names:
+    , ignore.case = TRUE
+  ) ]
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+
+# If the list with file paths contains more than 2 paths in one of the list
+# elements, then something is wrong with the regular expression and/or the
+# files. Throw error if this occurs:
+
+stopifnot(
+  "There must be exactly 2 files (one .ffData and one .RData file) that can be 
+  matched to each chromosome number.   Please ensure that the EWAS filesets 
+  have names containing \"Chr%\" or \"chr%\" directly followed by a non-digit 
+  character, where '%' is a two-digit chromosome number such as 01, 02, 03, 
+  ..., 10, 11, 12 etc.. " =
+    all( sapply( ewas_file_paths_list, length ) == 2 )
+)
+
+# Is there one ffData + one RData file for each chromosome?
+stopifnot(
+  "There must be one .ffData file and one .RData file, for each chromosome." =
+    all(
+      sapply( ewas_file_paths_list, function(chr){
+        # Is there an ffData file?
+        any( grepl( file_ext[1], chr ) ) &
+          # And an RData file?
+          any( grepl( file_ext[2], chr ) )
+      } )
+    )
+)
+
+
+# Paths in the different chromosome directories to copy the EWAS filesets to:
+ewas_subdir_paths <- sapply( as.character(chr_numbers), function(chr){
+  # Return paths to GWAS fileset in the chr subdir:
+  # Change base filename to "gwas"
+  return( file.path( subdir_paths[chr], paste0( "ewas", file_ext ) ) )
+}, simplify = FALSE, USE.NAMES = TRUE )
+
+
+# Copy the EWAS filesets to their respective chromosome subdirs:
+system.time({
+  
+  # For each chromosome, copy its respective GWAS fileset to its subdirectory:  
+  copied_ewas_metadata <- sapply( as.character(chr_numbers), function(chr){
+    
+    # Check that the file extensions in the "to" paths are in the exact same
+    # order as the "from" paths
+    stopifnot( all(
+      tools::file_ext( unlist(ewas_file_paths_list[chr]) ) == 
+        tools::file_ext( unlist(ewas_subdir_paths[chr]) )
+    ) )
+    
+    
+    # Copy file to the chr-specific directory:
+    copy_status <- file.copy( from = ewas_file_paths_list[[chr]]
+                              , to = ewas_subdir_paths[[chr]]
+                              , overwrite = TRUE
+                              # Preserve file date if possible:
+                              , copy.date = TRUE 
+    )
+    
+    # Stop if the fileset was not successfully copied
+    stopifnot( all(copy_status == TRUE) )
+    
+    # Get metadata of "original" file:
+    metadata1 <- file.info( ewas_file_paths_list[[chr]], extra_cols = FALSE)
+    metadata1 <- cbind( data.frame( "file" = rownames(metadata1))
+                        , data.frame( metadata1, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( 
+        grepl( unique(tools::file_path_sans_ext(ewas_file_paths_list[[chr]]))
+               , file)
+      )
+    # Get metadata of copied file:
+    metadata2 <- file.info( ewas_subdir_paths[[chr]], extra_cols = FALSE)
+    metadata2 <- cbind( data.frame( "file" = rownames(metadata2))
+                        , data.frame( metadata2, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( 
+        grepl( unique(tools::file_path_sans_ext(ewas_subdir_paths[[chr]]))
+               , file)
+      )
+    metadata <- dplyr::bind_rows( metadata1, metadata2) %>% 
+      # Add column with chr so that we can group the large combined table later:
+      mutate( chr = chr
+              , file_ext = tools::file_ext( file )
+      ) %>% 
+      select( chr, file_ext, everything() ) %>% 
+      arrange( chr, file_ext )
+    return(metadata)
+  }, simplify = FALSE, USE.NAMES = TRUE )
+  
+})
+
+
+dplyr::bind_rows( copied_ewas_metadata ) %>% 
+  group_by( chr ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+
+```
+
+
+
+# Copy GWAS Files
+
+```{r gwas_files}
+# The different file extensions:
+file_ext <- c(".bed", ".bim", ".fam" )
+
+gwas_fileset_name_pattern <- paste(
+  paste0( gwas_fileset_name_base_regex, file_ext )
+  , collapse = "|" )
+
+gwas_file_paths <- list.files(
+  path = gwas_fileset_dir
+  , pattern = gwas_fileset_name_pattern
+  , full.names = TRUE
+)
+gwas_file_paths %>% head(10)
+
+stopifnot(
+  "The number of filesets in 'gwas_fileset_dir' with basenames matching the pattern in 'gwas_fileset_name_base_regex' is smaller than the number of chromosomes to be studied!" =
+    length( gwas_file_paths ) >= length( unique(chr_numbers) ) * 3
+)
+
+# Divide the file paths into a list consisting of one vector per chromosome
+gwas_file_paths_list <- sapply(as.character(chr_numbers), function(chr){
+  gwas_file_paths[ grepl( paste0("Chr", chr, "[^0-9]")
+                          , gwas_file_paths
+                          # Ignore the casing of the letters in "Chr" part of
+                          # the regex/file names:
+                          , ignore.case = TRUE
+  ) ]
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# If the list with file paths contains more than 3 paths in one of the list
+# elements, then something is wrong with the regular expression and/or the
+# files. Throw error if this occurs:
+
+stopifnot(
+  "There must be exactly 3 files (bim + bed + fam) that can be matched to each chromosome number.
+  Please ensure that the binary PLINK filesets have names containing \"Chr%\" or \"chr%\"
+  directly followed by a non-digit character, where '%' is a chromosome number
+  such as 1, 2, 10 etc.. " =
+    all( sapply( gwas_file_paths_list, length ) == 3 )
+)
+
+
+# Is there a bed + bim + fam file for each chromosome?
+stopifnot(
+  "There must be one .bed file, one .bim file, and one .fam file for each chromosome." =
+    all(
+      sapply( gwas_file_paths_list, function(chr){
+        # Is there a bed file?
+        any( grepl( file_ext[1], chr ) ) &
+          # And a bim file?
+          any( grepl( file_ext[2], chr ) ) &
+          # And a fam file?
+          any( grepl( file_ext[3], chr ) )
+      } )
+    )
+)
+
+
+# Paths in the different chromosome directories to copy the GWAS filesets to:
+gwas_subdir_paths <- sapply( as.character(chr_numbers), function(chr){
+  # Return paths to GWAS fileset in the chr subdir:
+  # Change base filename to "gwas"
+  return( file.path( subdir_paths[chr], paste0( "gwas", file_ext ) ) )
+}, simplify = FALSE, USE.NAMES = TRUE )
+
+
+# Copy the GWAS filesets to their respective chromosome subdirs:
+system.time({
+  
+  # For each chromosome, copy its respective GWAS fileset to its subdirectory:  
+  copied_gwas_metadata <- sapply( as.character(chr_numbers), function(chr){
+
+    # Check that the file extensions in the "to" paths are in the exact same
+    # order as the "from" paths
+    stopifnot( all(
+      tools::file_ext( unlist(gwas_file_paths_list[chr]) ) == 
+        tools::file_ext( unlist(gwas_subdir_paths[chr]) )
+    ) )
+    
+    
+    # Copy file to the chr-specific directory:
+    copy_status <- file.copy( from = gwas_file_paths_list[[chr]]
+                              , to = gwas_subdir_paths[[chr]]
+                              , overwrite = TRUE
+                              # Preserve file date if possible:
+                              , copy.date = TRUE 
+    )
+    
+    # Stop if the fileset was not successfully copied
+    stopifnot( all(copy_status == TRUE) )
+    
+    # Get metadata of "original" file:
+    metadata1 <- file.info( gwas_file_paths_list[[chr]], extra_cols = FALSE)
+    metadata1 <- cbind( data.frame( "file" = rownames(metadata1))
+                        , data.frame( metadata1, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( 
+        grepl( unique(tools::file_path_sans_ext(gwas_file_paths_list[[chr]]))
+               , file)
+      )
+    # Get metadata of copied file:
+    metadata2 <- file.info( gwas_subdir_paths[[chr]], extra_cols = FALSE)
+    metadata2 <- cbind( data.frame( "file" = rownames(metadata2))
+                        , data.frame( metadata2, row.names = NULL) ) %>%
+      select( -isdir, -mode, -atime ) %>%
+      filter( 
+        grepl( unique(tools::file_path_sans_ext(gwas_subdir_paths[[chr]]))
+               , file)
+      )
+    metadata <- dplyr::bind_rows( metadata1, metadata2) %>% 
+      # Add column with chr so that we can group the large combined table later:
+      mutate( chr = chr
+              , file_ext = tools::file_ext( file )
+              ) %>% 
+      select( chr, file_ext, everything() ) %>% 
+      arrange( chr, file_ext )
+    return(metadata)
+  }, simplify = FALSE, USE.NAMES = TRUE )
+  
+})
+
+dplyr::bind_rows( copied_gwas_metadata ) %>% 
+  group_by( chr ) %>% 
+  gt::gt() %>%
+  fmt_integer() %>%
+  tab_options( table.font.size = "x-small" )
+```
+
+
+
+
+```{r}
+# Stop timer:
+end_time <- Sys.time()
+
+script_execution_time <- end_time -start_time
+
+cat("The execution time of this script was", as.numeric( script_execution_time, units = "secs" ), "seconds.")
+```
+
+
+# The execution time of this script was __`r round( as.numeric( script_execution_time, units = "mins" ), 3)` minutes__.
+
+
+# Complete session info
+
+```{r fold.output=TRUE}
+sessionInfo()
+```
